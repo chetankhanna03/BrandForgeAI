@@ -25,7 +25,7 @@ beforeEach(()=>{
   sessionStorage.clear();vi.restoreAllMocks();
   workspace={rules:[{...baseRule}],drafts:[],history:[]};
   handler=(url,init)=>url==='/api/workspace'?json(workspace):url==='/api/analyze'?json(passing):url==='/api/drafts'?json({id:1,results:passing}):url==='/api/extract'?json({candidates:[]}):json({updated:true});
-  fetchMock=vi.fn((url:string,init?:RequestInit)=>handler(url,init));vi.stubGlobal('fetch',fetchMock);
+  fetchMock=vi.fn((url:string,init?:RequestInit)=>url==='/api/auth/status'?json({authenticated:true,setup_required:false}):handler(url,init));vi.stubGlobal('fetch',fetchMock);
 });
 
 describe('workspace navigation and recovery',()=>{
@@ -303,5 +303,31 @@ describe('brand setup and campaign media',()=>{
     await userEvent.upload(screen.getByLabelText('Upload brand image or video'),new File(['bad'],'broken.mp4',{type:'video/mp4'}));
     expect(await screen.findByRole('alert')).toHaveTextContent('Could not read this video.');
     expect(screen.getByLabelText('Brand video: brand.mp4')).toBeInTheDocument();
+  },15000);
+});
+
+describe('multimodal analysis in the existing editor',()=>{
+  it('sends an attached media ID without a caption and displays provider failure without a pass',async()=>{
+    const media:BrandMedia={id:'d'.repeat(32),filename:'creative.png',mime:'image/png',kind:'image',url:'/api/media/creative?brand_id=demo'};
+    handler=url=>url==='/api/media'?json(media,201):url==='/api/analyze'?json({...passing,score:null,analysis:{status:'failed',message:'NVIDIA rate limit reached.'},report_id:'e'.repeat(32)}):json(workspace);
+    await studio();
+    fireEvent.change(screen.getByLabelText(/Marketing copy/),{target:{value:''}});
+    expect(screen.getByRole('button',{name:'Run compliance check'})).toBeDisabled();
+    await userEvent.upload(screen.getByLabelText('Upload brand image or video'),new File(['image'],'creative.png',{type:'image/png'}));
+    await screen.findByRole('img',{name:'Brand creative: creative.png'});
+    expect(screen.getByRole('button',{name:'Run compliance check'})).not.toBeDisabled();
+    await userEvent.click(screen.getByRole('button',{name:'Run compliance check'}));
+    await screen.findByText('NVIDIA rate limit reached.');
+    expect(body('analyze').media_id).toBe(media.id);expect(body('analyze').content).toBe('');
+    expect(screen.queryByText(/Looking good/)).not.toBeInTheDocument();
+  },15000);
+  it('shows semantic extraction failure while preserving unapproved pattern candidates',async()=>{
+    handler=url=>url==='/api/extract'?json({candidates:[{...baseRule,id:0,approved:false}],analysis:{status:'failed',message:'NVIDIA is unavailable.'}}):json(workspace);
+    await ready();await nav('Guidelines & rules');
+    await userEvent.upload(screen.getByLabelText('Upload guidelines'),new File(['range: 400 km'],'guide.txt',{type:'text/plain'}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Semantic guideline extraction failed');
+    expect(screen.getByRole('button',{name:/Review candidate/})).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button',{name:/Review candidate/}));
+    expect(screen.getByRole('checkbox',{name:/I’ve reviewed/})).not.toBeChecked();
   },15000);
 });

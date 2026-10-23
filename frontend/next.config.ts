@@ -5,6 +5,7 @@ import path from 'node:path';
 const nextConfig = (phase: string): NextConfig => ({
   distDir: phase === PHASE_DEVELOPMENT_SERVER ? '.next-dev' : '.next',
   outputFileTracingRoot: path.resolve(process.cwd()),
+  experimental: {proxyTimeout: 180000},
   async rewrites() {
     return [{ source: '/api/:path*', destination: `${process.env.BACKEND_URL || 'http://127.0.0.1:8000'}/api/:path*` }];
   },

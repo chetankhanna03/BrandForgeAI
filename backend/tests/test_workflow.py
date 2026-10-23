@@ -6,8 +6,10 @@ from backend import main
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, 'DB_PATH', str(tmp_path / 'test.db'))
+    monkeypatch.setenv('BRANDFORGE_DETERMINISTIC_ONLY', 'true')
     main.initialize()
-    with TestClient(main.app) as client:
+    with TestClient(main.app, client=('127.0.0.1', 50000)) as client:
+        assert client.post('/api/auth/setup', json={'username': 'owner', 'password': 'test-owner-password-123'}).status_code == 201
         yield client
 
 

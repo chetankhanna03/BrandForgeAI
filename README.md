@@ -29,6 +29,8 @@ npm run dev
 
 Open **http://localhost:3000**. API documentation: **http://127.0.0.1:8000/docs**. Next.js forwards `/api/*` to FastAPI; no browser CORS configuration is needed. Set `BACKEND_URL` if the API runs elsewhere.
 
+For NVIDIA analysis, configure `backend/.env` using [backend/.env.example](backend/.env.example), then restart the backend. On first visit, create the local owner account. See [NVIDIA integration setup, routes, limits, and verification](docs/NEMOTRON_INTEGRATION.md). If your virtual environment is inside `backend`, that guide includes the matching startup command.
+
 ## Five-minute demo
 
 ### Use your own brand
@@ -36,7 +38,7 @@ Open **http://localhost:3000**. API documentation: **http://127.0.0.1:8000/docs*
 - In **Overview**, choose **Add your brand**. Enter a brand name and product/service, then optionally add an industry, tagline, and website/account handle. Select one, two, or all three platforms: Instagram, LinkedIn, Website.
 - Each brand has its own saved details, rules, drafts, review history, and uploads. New brands start without the Volt sample rules; add and approve your guidelines using the existing **Guidelines & rules** flow.
 - In **BrandTwin**, choose platforms for the current draft and optionally upload an image or video (up to 10 MB). The selected platforms determine the available previews. Media is saved with the draft and restored when opening it as a new version.
-- Image/video uploads are for preview and attachment. Compliance analysis still checks the written marketing copy.
+- JPEG/PNG images and MP4 videos can be reviewed alongside the copy, or without a caption. MP4 review is limited to 120 seconds; other existing upload formats are preview-only. Review model evidence and explicitly approve suggested corrections before applying them.
 - Return to **Overview → Active brand → Volt One — example brand** whenever you want to explore the original demo. Editors are recovered separately for each brand during the browser session.
 
 ### Explore Volt One
@@ -55,7 +57,10 @@ Open **http://localhost:3000**. API documentation: **http://127.0.0.1:8000/docs*
 - Source citations and rule versions on findings; numeric and missing-phrase corrections can be applied in the editor.
 - Instagram, LinkedIn, and website preview mockups.
 - React Flow graph with rule-to-draft dependencies.
-- PDF/TXT/Markdown pattern extraction with human confirmation.
+- PDF/TXT/Markdown pattern + Nemotron extraction, including rendered image-based pages, with human confirmation.
+- Semantic claim/tone checks, model OCR/transcript observations, visual review, and timestamped video findings where supported by the endpoint.
+- Single-owner login, authenticated media access, and persisted correction-review decisions.
+- Explicit incomplete reports and server-side submission/approval blocks for failed or missing analysis.
 - Review state transitions, reviewer notes, and server-side guards against submitting or approving failing content. Rechecks preserve current review decisions.
 - Conflict prevention for approved product facts, optimistic version checks for rule edits, and no-op saves that leave drafts untouched.
 - Session-local recovery of the open editor, duplicate-save protection, accessible keyboard dialogs, and friendly connection/upload errors.
@@ -63,13 +68,13 @@ Open **http://localhost:3000**. API documentation: **http://127.0.0.1:8000/docs*
 
 ## Scope and next steps
 
-This is a **local prototype with separate brand workspaces**. There is no authentication or separation of creator/reviewer permissions. Only bind the API to loopback for this demo. The SQLite database is created automatically at `backend/brandforge.db`; set `BRANDFORGE_DB` to use another path. Additional brand databases are stored alongside it as `brandforge.brand-<id>.db`; media attachments are stored in the corresponding brand database. Back up these files together to preserve all workspaces.
+This is a **local prototype with separate brand workspaces and a single authenticated owner**. The owner controls creation and review; separate creator/reviewer accounts are not implemented. Only bind the API to loopback for this demo. The SQLite database is created automatically at `backend/brandforge.db`; set `BRANDFORGE_DB` to use another path. Additional brand databases are stored alongside it as `brandforge.brand-<id>.db`; media attachments are stored in the corresponding brand database. Back up these files together to preserve all workspaces.
 
-Extraction uses supported text patterns, **not an LLM**. No API key is required. Scanned PDFs need OCR, which is not included. Arbitrary natural-language rules are not interpreted. Color rules are reference data; the app does not inspect uploaded advertising images, typography, logos, or visual compliance.
+Nemotron analysis requires a valid server-side NVIDIA API Catalog key. Uploaded content is untrusted data and never becomes an active rule without human approval. Explicit offline mode (`BRANDFORGE_DETERMINISTIC_ONLY=true`) retains the text-pattern demo but cannot pass semantic or media checks. Visual interpretation and model-read text/speech can be uncertain. Sampled image pixels are measured context, not exact brand color certification. Video samples can miss brief scenes. See the integration guide for all limits and known gaps.
 
-Product checks currently assume one demo product, range in km, and price in USD. All matching numeric mentions are compared with the corresponding approved fact. Only one fact per supported unit can be approved at a time. The score is a demo heuristic (100 minus 15 per finding), not a probability of correctness; a workspace with no active text rules cannot pass. Platform limits (2,200 / 3,000 / 5,000) are workspace demo configurations, not a live platform-policy service. Preview artwork is decorative CSS and is not checked by the engine. Editing saved copy creates a new draft rather than overwriting review history.
+Product checks currently assume one product per brand, range in km, and price in USD. All matching numeric mentions are compared with the corresponding approved fact. Only one fact per supported unit can be approved at a time. The score is a demo heuristic (100 minus 15 per finding), not a probability of correctness; incomplete analysis has no score, and a workspace without applicable approved rules cannot pass. Platform limits (2,200 / 3,000 / 5,000) are workspace demo configurations, not a live platform-policy service. Decorative CSS preview artwork is not submitted for analysis; uploaded creatives are. Editing saved copy creates a new draft rather than overwriting review history.
 
-Next milestones: LLM-assisted extraction with schema validation and citations, product scoping, reviewer accounts, semantic claim checks, OCR/image validation, full migrations, and deployment.
+Next milestones: product scoping, separate reviewer accounts, exact reference-logo/region verification, long-video preprocessing, operational account recovery, and production deployment.
 
 ## Verification
 

@@ -1,4 +1,5 @@
-"""BrandForge's local, deterministic hackathon API. No credentials required."""
+"""BrandForge workspace API: deterministic and NVIDIA multimodal compliance."""
+import hashlib
 import json
 import os
 import re
@@ -9,11 +10,23 @@ from decimal import Decimal, InvalidOperation
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+import time
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from fastapi.exceptions import RequestValidationError
+from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator, ValidationError
+from dotenv import load_dotenv
+
+from . import nemotron
+from .ai_schemas import Category, Severity
+from .auth import install_auth
+from .compliance import build_report, checked_rules
+from .media_processing import inspect_image, inspect_video, InvalidMedia
+
+load_dotenv(Path(__file__).with_name('.env'), override=False)
 
 DB_PATH = os.getenv('BRANDFORGE_DB', str(Path(__file__).with_name('brandforge.db')))
 app = FastAPI(title='BrandForge AI', version='0.1.0')
@@ -60,7 +73,15 @@ def initialize():
         CREATE TABLE IF NOT EXISTS brands (
           id TEXT PRIMARY KEY, profile TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS media (
-          id TEXT PRIMARY KEY, filename TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL);''')
+          id TEXT PRIMARY KEY, filename TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL);
+        CREATE TABLE IF NOT EXISTS analysis_reports (
+          id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, result TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS owner_account (
+          id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL, salt TEXT NOT NULL,
+          password_hash TEXT NOT NULL, role TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS sessions (
+          token_hash TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, expires REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS login_attempts (address TEXT NOT NULL, attempted_at REAL NOT NULL);''')
         if ACTIVE_BRAND.get() == 'demo' and not c.execute('SELECT COUNT(*) FROM rules').fetchone()[0]:
             c.executemany('INSERT INTO rules (name,kind,value,unit,evidence,source) VALUES (?,?,?,?,?,?)', SEED_RULES)
         if 'applies_when' not in {row['name'] for row in c.execute('PRAGMA table_info(rules)')}:
@@ -68,6 +89,17 @@ def initialize():
             c.execute("UPDATE rules SET applies_when='range_claim' WHERE kind='required' AND name='Range disclaimer'")
         if 'media_id' not in {row['name'] for row in c.execute('PRAGMA table_info(drafts)')}:
             c.execute('ALTER TABLE drafts ADD COLUMN media_id TEXT')
+        for column, definition in {'category': "TEXT NOT NULL DEFAULT 'general'", 'severity': "TEXT NOT NULL DEFAULT 'error'", 'rationale': "TEXT NOT NULL DEFAULT ''"}.items():
+            if column not in {row['name'] for row in c.execute('PRAGMA table_info(rules)')}:
+                c.execute(f'ALTER TABLE rules ADD COLUMN {column} {definition}')
+        for draft in c.execute('SELECT id,results FROM drafts').fetchall():
+            result = json.loads(draft['results'])
+            if 'analysis' not in result:
+                result.update(score=None, passed=False, analysis={'status': 'not_requested',
+                    'message': 'This draft predates multimodal analysis. Recheck it before approval.'})
+                for platform in result.get('platforms', []):
+                    platform['passed'] = False
+                c.execute("UPDATE drafts SET status='needs_review',results=? WHERE id=?", (json.dumps(result), draft['id']))
 
 
 initialize()
@@ -86,9 +118,22 @@ async def brand_context(request: Request, call_next):
                 return JSONResponse(status_code=404, content={'detail': 'Brand not found.'})
     token = ACTIVE_BRAND.set(brand_id)
     try:
+        if brand_id != 'demo':
+            # Also migrate existing brand databases on first access after an upgrade.
+            initialize()
         return await call_next(request)
     finally:
         ACTIVE_BRAND.reset(token)
+
+
+install_auth(app, lambda: db(catalog=True))
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request, error):
+    return JSONResponse(status_code=422, content={'detail': [
+        {key: item[key] for key in ('loc', 'msg', 'type') if key in item}
+        for item in error.errors()]})
 
 
 def active_profile():
@@ -160,16 +205,16 @@ class CleanInput(BaseModel):
 
 class DraftInput(CleanInput):
     title: str = Field(min_length=1, max_length=120)
-    content: Annotated[str, StringConstraints(strip_whitespace=False)] = Field(min_length=1, max_length=20000)
+    content: Annotated[str, StringConstraints(strip_whitespace=False)] = Field(min_length=0, max_length=20000)
     platforms: list[Literal['Instagram', 'LinkedIn', 'Website']] = Field(min_length=1, max_length=3)
     media_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
+    report_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
 
-    @field_validator('content')
-    @classmethod
-    def nonblank_content(cls, value):
-        if not value.strip():
-            raise ValueError('Marketing copy cannot be blank.')
-        return value
+    @model_validator(mode='after')
+    def nonblank_content(self):
+        if not self.content.strip() and not self.media_id:
+            raise ValueError('Marketing copy cannot be blank unless an image or video is attached.')
+        return self
 
     @field_validator('platforms')
     @classmethod
@@ -181,7 +226,7 @@ class DraftInput(CleanInput):
 
 class RuleInput(CleanInput):
     name: str = Field(min_length=1, max_length=120)
-    kind: Literal['fact', 'prohibited', 'required', 'color']
+    kind: Literal['fact', 'prohibited', 'required', 'color', 'semantic']
     value: str = Field(min_length=1, max_length=2000)
     unit: str = Field(default='', max_length=20)
     evidence: str = Field(min_length=1, max_length=5000)
@@ -189,6 +234,9 @@ class RuleInput(CleanInput):
     approved: bool = False
     applies_when: Literal['always', 'range_claim'] = 'always'
     version: int | None = Field(default=None, ge=1)
+    category: Category = 'general'
+    severity: Severity = 'error'
+    rationale: str = Field(default='', max_length=2000)
 
 
 class BrandInput(CleanInput):
@@ -266,6 +314,11 @@ async def upload_media(file: UploadFile):
         mime = 'video/webm'
     if not mime:
         raise HTTPException(422, 'Supported media: PNG, JPEG, GIF, WebP, MP4, WebM, MOV. The file contents must match a supported format.')
+    if mime in ('image/png', 'image/jpeg', 'video/mp4'):
+        try:
+            await run_in_threadpool(inspect_video if mime == 'video/mp4' else inspect_image, data)
+        except InvalidMedia as error:
+            raise HTTPException(422, str(error)) from None
     filename = (file.filename or 'creative').replace('\\', '/').rsplit('/', 1)[-1][:200]
     item = {'id': uuid.uuid4().hex, 'filename': filename, 'mime': mime}
     with db() as c:
@@ -321,7 +374,7 @@ def validate_rule(rule):
         rule.applies_when = 'always'
 
 
-RULE_FIELDS = ('name', 'kind', 'value', 'unit', 'evidence', 'source', 'approved', 'applies_when')
+RULE_FIELDS = ('name', 'kind', 'value', 'unit', 'evidence', 'source', 'approved', 'applies_when', 'category', 'severity', 'rationale')
 
 
 def prevent_conflict(c, rule, rule_id=None):
@@ -358,21 +411,51 @@ def workspace():
         profile = active_profile()
         media = [media_details(row) for row in c.execute('SELECT id,filename,mime FROM media')]
         return {'brand': profile['name'], 'profile': profile, 'media': media, 'rules': rules_from(c), 'drafts': drafts,
+                'ai': {'configured': nemotron.configured(), 'mode': 'deterministic_only' if nemotron.deterministic_only() else 'nemotron',
+                       'model': nemotron.model_name()},
                 'history': [dict(r) for r in c.execute('SELECT * FROM history ORDER BY id DESC LIMIT 30')]}
+
+
+def perform_analysis(payload, force=False):
+    with db() as c:
+        rules = rules_from(c)
+        media = c.execute('SELECT * FROM media WHERE id=?', (payload.media_id,)).fetchone() if payload.media_id else None
+        if payload.media_id and not media:
+            raise HTTPException(422, 'Upload the image or video in this brand before attaching it.')
+        fingerprint = hashlib.sha256(json.dumps({
+            'content': payload.content, 'platforms': payload.platforms, 'rules': [r for r in rules if r['approved']],
+            'media': hashlib.sha256(media['data']).hexdigest() if media else None,
+            'model': nemotron.model_name(), 'base_url': os.getenv('NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1'),
+            'offline': nemotron.deterministic_only(), 'engine_version': 2,
+        }, sort_keys=True).encode()).hexdigest()
+        if payload.report_id and not force:
+            cached = c.execute('SELECT * FROM analysis_reports WHERE id=? AND fingerprint=? AND created>?',
+                               (payload.report_id, fingerprint, time.time() - 900)).fetchone()
+            if cached:
+                return json.loads(cached['result'])
+    result = build_report(payload, rules, dict(media) if media else None, evaluate)
+    result['report_id'] = uuid.uuid4().hex
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        if result['dependencies'] != checked_rules(rules_from(c)):
+            raise HTTPException(409, 'Brand rules changed during analysis. Run the check again.')
+        c.execute('INSERT INTO analysis_reports (id,fingerprint,result,created) VALUES (?,?,?,?)',
+                  (result['report_id'], fingerprint, json.dumps(result), time.time()))
+    return result
 
 
 @app.post('/api/analyze')
 def analyze(payload: DraftInput):
-    with db() as c:
-        return evaluate(payload.content, payload.platforms, rules_from(c))
+    return perform_analysis(payload, force=True)
 
 
 @app.post('/api/drafts')
 def save_draft(payload: DraftInput):
+    result = perform_analysis(payload)
     with db() as c:
-        if payload.media_id and not c.execute('SELECT 1 FROM media WHERE id=?', (payload.media_id,)).fetchone():
-            raise HTTPException(422, 'Upload the image or video in this brand before attaching it.')
-        result = evaluate(payload.content, payload.platforms, rules_from(c))
+        c.execute('BEGIN IMMEDIATE')
+        if result['dependencies'] != checked_rules(rules_from(c)):
+            raise HTTPException(409, 'Brand rules changed. Check this draft again before saving.')
         cursor = c.execute('INSERT INTO drafts (title,content,platforms,status,results,dependencies,updated_at,media_id) VALUES (?,?,?,?,?,?,?,?)',
                          (payload.title, payload.content, json.dumps(payload.platforms), 'draft', json.dumps(result), json.dumps(result['dependencies']), now(), payload.media_id))
         return {'id': cursor.lastrowid, 'results': result}
@@ -386,12 +469,27 @@ class ReviewInput(BaseModel):
 @app.post('/api/drafts/{draft_id}/review')
 def review(draft_id: int, payload: ReviewInput):
     with db() as c:
-        c.execute('BEGIN IMMEDIATE')
         row = c.execute('SELECT * FROM drafts WHERE id=?', (draft_id,)).fetchone()
         if not row:
             raise HTTPException(404, 'Draft not found')
-        result = evaluate(row['content'], json.loads(row['platforms']), rules_from(c))
-        if payload.action in ('submit', 'approve') and result['findings']:
+        previous = dict(row)
+    result = perform_analysis(DraftInput(title=row['title'], content=row['content'], platforms=json.loads(row['platforms']),
+                                        media_id=row['media_id'], report_id=json.loads(row['results']).get('report_id')),
+                              force=payload.action == 'recheck')
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        row = c.execute('SELECT * FROM drafts WHERE id=?', (draft_id,)).fetchone()
+        if dict(row) != previous or result['dependencies'] != checked_rules(rules_from(c)):
+            raise HTTPException(409, 'This draft or its brand rules changed during review. Refresh and recheck.')
+        if payload.action in ('submit', 'approve') and (result['analysis']['status'] != 'complete' or result['findings']):
+            status = 'needs_review' if row['status'] in ('pending', 'approved') else row['status']
+            c.execute('UPDATE drafts SET status=?,results=?,dependencies=?,updated_at=? WHERE id=?',
+                      (status, json.dumps(result), json.dumps(result['dependencies']), now(), draft_id))
+            # Persist the new failure before returning an error, so the previous
+            # passing result cannot linger in the review queue after a failed check.
+            c.commit()
+            if result['analysis']['status'] != 'complete':
+                raise HTTPException(409, 'Analysis is incomplete or unavailable. Recheck successfully before submitting or approving.')
             raise HTTPException(409, 'Resolve compliance findings before submitting or approving.')
         if payload.action == 'approve' and row['status'] != 'pending':
             raise HTTPException(409, 'Submit this draft for review before approving.')
@@ -404,7 +502,7 @@ def review(draft_id: int, payload: ReviewInput):
         if payload.action == 'recheck':
             # A harmless check must not discard a human approval or a revision request.
             status = row['status'] if row['status'] != 'needs_review' else 'draft'
-            if result['findings'] and status in ('pending', 'approved'):
+            if (result['findings'] or result['analysis']['status'] != 'complete') and status in ('pending', 'approved'):
                 status = 'needs_review'
         else:
             status = {'submit': 'pending', 'approve': 'approved', 'request_changes': 'changes_requested'}[payload.action]
@@ -413,13 +511,37 @@ def review(draft_id: int, payload: ReviewInput):
         return {'status': status, 'results': result}
 
 
+class CorrectionReview(CleanInput):
+    decision: Literal['accepted', 'rejected']
+
+
+@app.post('/api/reports/{report_id}/findings/{finding_id}/review')
+def review_correction(report_id: str, finding_id: str, payload: CorrectionReview):
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        row = c.execute('SELECT result FROM analysis_reports WHERE id=?', (report_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, 'Report not found in this brand.')
+        result = json.loads(row['result'])
+        finding = next((f for f in result['findings'] if f['id'] == finding_id), None)
+        if not finding:
+            raise HTTPException(404, 'Finding not found.')
+        finding.update(review_status=payload.decision, reviewed_at=now())
+        c.execute('UPDATE analysis_reports SET result=? WHERE id=?', (json.dumps(result), report_id))
+        # Accepting a correction records intent; it does not waive a violation or alter assets.
+        for draft in c.execute('SELECT id,results FROM drafts').fetchall():
+            if json.loads(draft['results']).get('report_id') == report_id:
+                c.execute('UPDATE drafts SET results=? WHERE id=?', (json.dumps(result), draft['id']))
+        return {'finding': finding, 'passed': result['passed']}
+
+
 @app.post('/api/rules')
 def create_rule(payload: RuleInput):
     validate_rule(payload)
     with db() as c:
         c.execute('BEGIN IMMEDIATE')
         prevent_conflict(c, payload)
-        cursor = c.execute('INSERT INTO rules (name,kind,value,unit,evidence,source,approved,applies_when) VALUES (?,?,?,?,?,?,?,?)', tuple(getattr(payload, key) for key in RULE_FIELDS))
+        cursor = c.execute(f'INSERT INTO rules ({",".join(RULE_FIELDS)}) VALUES ({",".join("?" for _ in RULE_FIELDS)})', tuple(getattr(payload, key) for key in RULE_FIELDS))
         if payload.approved:
             invalidate(c)
         return {'id': cursor.lastrowid}
@@ -438,7 +560,7 @@ def update_rule(rule_id: int, payload: RuleInput):
         if all(old[key] == getattr(payload, key) for key in RULE_FIELDS):
             return {'updated': False, 'affected_drafts': 0}
         prevent_conflict(c, payload, rule_id)
-        c.execute('UPDATE rules SET name=?,kind=?,value=?,unit=?,evidence=?,source=?,approved=?,applies_when=?,version=version+1 WHERE id=?', (*(getattr(payload, key) for key in RULE_FIELDS), rule_id))
+        c.execute(f'UPDATE rules SET {",".join(key + "=?" for key in RULE_FIELDS)},version=version+1 WHERE id=?', (*(getattr(payload, key) for key in RULE_FIELDS), rule_id))
         if old['approved'] or payload.approved:
             invalidate(c)
         return {'updated': True, 'affected_drafts': c.execute("SELECT COUNT(*) FROM drafts WHERE status='needs_review'").fetchone()[0]}
@@ -454,6 +576,7 @@ async def extract(file: UploadFile):
         raise HTTPException(422, 'Use a filename shorter than 400 characters.')
     if not data:
         raise HTTPException(422, 'This file is empty. Upload guidelines containing selectable text.')
+    visual_pages = []
     if filename.lower().endswith('.pdf'):
         try:
             import pymupdf
@@ -461,6 +584,14 @@ async def extract(file: UploadFile):
                 if len(document) > 100:
                     raise HTTPException(422, 'Use a guideline PDF with at most 100 pages.')
                 pages = [(i + 1, page.get_text()) for i, page in enumerate(document)]
+                if not nemotron.deterministic_only():
+                    for index, page in enumerate(document):
+                        if not pages[index][1].strip() or page.get_images() or page.get_drawings():
+                            if len(visual_pages) >= 6:
+                                raise HTTPException(422, 'Split guidelines into uploads with at most six image-based pages. No pages have been silently skipped.')
+                            scale = min(1.6, 1400 / max(page.rect.width, page.rect.height))
+                            png = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False).tobytes('png')
+                            visual_pages.append((index + 1, png))
         except HTTPException:
             raise
         except Exception:
@@ -496,8 +627,40 @@ async def extract(file: UploadFile):
             if match:
                 candidates.append({**base, 'name': 'Prohibited language', 'kind': 'prohibited', 'value': '|'.join(p.strip() for p in match.group(1).split(','))[:2000]})
     characters = sum(len(t.strip()) for _, t in pages)
-    if not characters:
+    if not characters and nemotron.deterministic_only():
         raise HTTPException(422, 'No selectable text found. Scanned PDFs need OCR; upload a text-based guideline file.')
+    analysis = {'status': 'not_requested', 'mode': 'deterministic_only'}
+    if not nemotron.deterministic_only():
+        if characters > 60000:
+            raise HTTPException(422, 'Split guidelines into uploads with at most 60,000 text characters. No content has been silently omitted.')
+        try:
+            parts = []
+            for number, png in visual_pages:
+                parts += [{'type': 'text', 'text': f'Untrusted guideline screenshot, page {number}.'}, nemotron.media_part(png, 'image/png')]
+            report = await run_in_threadpool(nemotron.extract_rules,
+                {'pages': [{'page': number, 'text': text} for number, text in pages]}, parts)
+            proposed = []
+            page_text = dict(pages)
+            visual_numbers = {number for number, _ in visual_pages}
+            for rule in report.candidates:
+                if rule.page not in page_text:
+                    raise nemotron.AnalysisUnavailable('The model cited a guideline page that does not exist.', 'invalid_output')
+                normalized = lambda value: ' '.join(value.casefold().split())
+                if rule.page not in visual_numbers and normalized(rule.evidence) not in normalized(page_text[rule.page]):
+                    raise nemotron.AnalysisUnavailable('The model returned an evidence excerpt that is not in the guideline page.', 'invalid_output')
+                candidate = {**rule.model_dump(exclude={'page'}), 'approved': False,
+                             'source': f'{filename} · Page {rule.page}'}
+                try:
+                    clean = RuleInput(**candidate)
+                    validate_rule(clean)
+                except (HTTPException, ValidationError):
+                    raise nemotron.AnalysisUnavailable('The model proposed an invalid rule. Review the source and retry extraction.', 'invalid_output') from None
+                proposed.append(clean.model_dump(exclude={'version'}))
+            candidates += proposed
+            analysis = {'status': 'complete', 'mode': 'nemotron'}
+        except nemotron.AnalysisUnavailable as error:
+            analysis = {'status': 'failed', 'mode': 'nemotron', 'message': str(error), 'code': error.code}
     unique = list({(r['kind'], r['value'], r['unit'], r['applies_when']): r for r in candidates}.values())
-    return {'candidates': unique[:50], 'method': 'Pattern extraction · human confirmation required',
+    return {'candidates': unique[:50], 'method': ('Pattern + Nemotron extraction' if analysis['status'] == 'complete' else 'Pattern extraction only') + ' · human confirmation required',
+            'analysis': analysis,
             'characters': characters, 'truncated': len(unique) > 50, 'message': 'Review extracted candidates before adding them. Existing facts should be updated rather than duplicated.'}

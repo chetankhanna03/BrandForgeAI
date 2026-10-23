@@ -8,8 +8,10 @@ from backend import main
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, 'DB_PATH', str(tmp_path / 'test.db'))
+    monkeypatch.setenv('BRANDFORGE_DETERMINISTIC_ONLY', 'true')
     main.initialize()
-    with TestClient(main.app) as client:
+    with TestClient(main.app, client=('127.0.0.1', 50000)) as client:
+        assert client.post('/api/auth/setup', json={'username': 'owner', 'password': 'test-owner-password-123'}).status_code == 201
         yield client
 
 
@@ -77,15 +79,15 @@ def test_media_is_saved_with_draft_and_scoped_to_brand(client):
     assert workspace['media'] == [media]
 
 
-def test_video_range_requests_and_upload_validation(client):
-    video = b'\x00\x00\x00\x18ftypmp42' + b'\x00' * 50
+def test_video_range_requests_and_upload_validation(client, tiny_mp4):
+    video = tiny_mp4()
     media = client.post('/api/media', files={'file': ('clip.mp4', video, 'video/mp4')}).json()
     assert media['kind'] == 'video'
     response = client.get(media['url'], headers={'Range': 'bytes=4-11'})
     assert response.status_code == 206
     assert response.content == video[4:12]
     assert response.headers['content-range'] == f'bytes 4-11/{len(video)}'
-    assert client.get(media['url'], headers={'Range': 'bytes=999-'}).status_code == 416
+    assert client.get(media['url'], headers={'Range': f'bytes={len(video) + 1}-'}).status_code == 416
     assert client.post('/api/media', files={'file': ('empty.png', b'', 'image/png')}).status_code == 422
     assert client.post('/api/media', files={'file': ('fake.png', b'<script>bad</script>', 'image/png')}).status_code == 422
     assert client.post('/api/media', files={'file': ('large.mp4', b'x' * (10 * 1024 * 1024 + 1), 'video/mp4')}).status_code == 413
