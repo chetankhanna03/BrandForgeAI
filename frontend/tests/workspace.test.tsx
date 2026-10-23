@@ -3,6 +3,8 @@ import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 import Home from '../app/page';
+import {demoBrand, type Brand} from '../app/brand-setup';
+import type {BrandMedia} from '../app/brand-media';
 
 vi.mock('@xyflow/react',()=>({ReactFlow:({nodes,edges,children}:{nodes:unknown[];edges:unknown[];children:React.ReactNode})=><div data-testid="graph" data-nodes={JSON.stringify(nodes,(key,value)=>key==='label'&&React.isValidElement(value)?'Graph card':value)} data-edges={JSON.stringify(edges)}>{children}</div>,Background:()=>null,Controls:()=>null,MarkerType:{ArrowClosed:'closed'},Position:{Left:'left',Right:'right'}}));
 
@@ -10,7 +12,7 @@ const baseRule={id:1,name:'Product range',kind:'fact',value:'400',unit:'km',evid
 const passing={score:100,findings:[],platforms:['Instagram','LinkedIn','Website'].map(name=>({name,passed:true,limit:2200})),engine:'Deterministic rules v1 · text only'};
 const rangeFinding={id:'1-0',title:'Product range',message:'500 km is not approved.',suggestion:'400 km',matched:'500 km',source:baseRule.source,evidence:baseRule.evidence,platform:'All platforms',fix:{kind:'replace',start:4,end:10,text:'400 km'}};
 const draft=(status='draft',findings:unknown[]=[])=>({id:1,title:'Launch campaign',content:'Meet Volt One. Thoughtfully electric.',platforms:['Instagram','LinkedIn','Website'],status,results:{...passing,findings},dependencies:{'1':1},updated_at:'2026-10-22T10:00:00Z'});
-let workspace:{rules:typeof baseRule[];drafts:ReturnType<typeof draft>[];history:unknown[]};
+let workspace:{profile?:Brand;media?:BrandMedia[];rules:typeof baseRule[];drafts:ReturnType<typeof draft>[];history:unknown[]};
 let handler:(url:string,init?:RequestInit)=>Promise<Response>;
 let fetchMock:ReturnType<typeof vi.fn>;
 function json(body:unknown,status=200){return Promise.resolve({ok:status<400,status,json:async()=>body} as Response);}
@@ -240,4 +242,66 @@ describe('guidelines, extraction, and rule editing',()=>{
     await ready();await nav('Guidelines & rules');await userEvent.upload(screen.getByLabelText('Upload guidelines'),new File(['text'],'guide.txt'));
     expect(await screen.findByRole('alert')).toHaveTextContent('Upload failed.');expect(screen.getByRole('heading',{name:'Brand rules'})).toBeInTheDocument();
   });
+});
+
+describe('brand setup and campaign media',()=>{
+  const custom:Brand={id:'a'.repeat(32),name:'Bloom Studio',product:'Handmade skincare',industry:'Beauty',tagline:'Care, naturally.',website:'bloom.studio',platforms:['Instagram'],is_demo:false};
+  it('creates a separate brand with selected platforms and keeps the Volt example available',async()=>{
+    const demoWorkspace={...workspace,profile:demoBrand};
+    handler=(url,init)=>{
+      if(url==='/api/brands')return init?.method==='POST'?json(custom):json({brands:[demoBrand,custom]});
+      const brand=(init?.headers as Record<string,string>)?.['X-Brand-ID'];
+      return json(brand===custom.id?{...workspace,profile:custom,rules:[],drafts:[]}:demoWorkspace);
+    };
+    await ready();await userEvent.click(screen.getByRole('button',{name:'Add your brand'}));
+    fireEvent.change(screen.getByLabelText('Brand name'),{target:{value:'Bloom Studio'}});
+    fireEvent.change(screen.getByLabelText('Product or service'),{target:{value:'Handmade skincare'}});
+    await userEvent.click(screen.getByRole('button',{name:'LinkedIn'}));
+    await userEvent.click(screen.getByRole('button',{name:'Website'}));
+    await userEvent.click(screen.getByRole('button',{name:'Instagram'}));
+    expect(screen.getByRole('button',{name:'Create brand workspace'})).toBeDisabled();
+    await userEvent.click(screen.getByRole('button',{name:'Instagram'}));
+    await userEvent.click(screen.getByRole('button',{name:'Create brand workspace'}));
+    await screen.findByText('Bloom Studio workspace');
+    const creation=posted('brands').find(([,init])=>init?.method==='POST');
+    expect(JSON.parse(creation?.[1]?.body as string).platforms).toEqual(['Instagram']);
+    await nav('BrandTwin');
+    expect(screen.getByLabelText(/Marketing copy/)).toHaveValue('');
+    expect(screen.getByRole('button',{name:'Preview Instagram'})).toBeInTheDocument();
+    expect(screen.queryByRole('button',{name:'Preview LinkedIn'})).not.toBeInTheDocument();
+    expect(screen.queryByText('VOLT ONE')).not.toBeInTheDocument();
+    await nav('Overview');await userEvent.selectOptions(screen.getByLabelText('Active brand'),'demo');
+    await screen.findByText('Volt workspace');await nav('BrandTwin');
+    expect((screen.getByLabelText(/Marketing copy/) as HTMLTextAreaElement).value).toContain('Meet Volt One');
+  },15000);
+  it('uploads an image, previews it, and keeps it when reopening the saved draft',async()=>{
+    const media:BrandMedia={id:'b'.repeat(32),filename:'campaign.png',mime:'image/png',kind:'image',url:'/api/media/image?brand_id=demo'};
+    handler=(url)=>{
+      if(url==='/api/media')return json(media,201);
+      if(url==='/api/drafts'){workspace.media=[media];workspace.drafts=[{...draft(),media_id:media.id} as ReturnType<typeof draft>];return json({id:1});}
+      return json(workspace);
+    };
+    await studio();
+    await userEvent.upload(screen.getByLabelText('Upload brand image or video'),new File(['image'],'campaign.png',{type:'image/png'}));
+    expect(await screen.findByRole('img',{name:'Brand creative: campaign.png'})).toHaveAttribute('src',media.url);
+    await userEvent.click(screen.getByRole('button',{name:'Save draft'}));
+    await screen.findByText('Draft saved to your content library.');expect(body('drafts').media_id).toBe(media.id);
+    await userEvent.click(screen.getByRole('button',{name:'New content'}));
+    expect(screen.queryByRole('img',{name:'Brand creative: campaign.png'})).not.toBeInTheDocument();
+    await nav('Content library');await userEvent.click(screen.getByRole('button',{name:/Edit as a new version/}));
+    expect(screen.getByRole('img',{name:'Brand creative: campaign.png'})).toHaveAttribute('src',media.url);
+    await userEvent.click(screen.getByRole('button',{name:'Remove attached media'}));
+    expect(screen.queryByRole('img',{name:'Brand creative: campaign.png'})).not.toBeInTheDocument();
+  },15000);
+  it('previews a video with playback controls and reports upload failures',async()=>{
+    const media:BrandMedia={id:'c'.repeat(32),filename:'brand.mp4',mime:'video/mp4',kind:'video',url:'/api/media/video?brand_id=demo'};
+    handler=url=>url==='/api/media'?json(media,201):json(workspace);
+    await studio();
+    await userEvent.upload(screen.getByLabelText('Upload brand image or video'),new File(['video'],'brand.mp4',{type:'video/mp4'}));
+    const video=await screen.findByLabelText('Brand video: brand.mp4');expect(video).toHaveAttribute('controls');expect(video).toHaveAttribute('src',media.url);
+    handler=url=>url==='/api/media'?json({detail:'Could not read this video.'},422):json(workspace);
+    await userEvent.upload(screen.getByLabelText('Upload brand image or video'),new File(['bad'],'broken.mp4',{type:'video/mp4'}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not read this video.');
+    expect(screen.getByLabelText('Brand video: brand.mp4')).toBeInTheDocument();
+  },15000);
 });

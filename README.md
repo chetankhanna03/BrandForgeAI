@@ -31,6 +31,16 @@ Open **http://localhost:3000**. API documentation: **http://127.0.0.1:8000/docs*
 
 ## Five-minute demo
 
+### Use your own brand
+
+- In **Overview**, choose **Add your brand**. Enter a brand name and product/service, then optionally add an industry, tagline, and website/account handle. Select one, two, or all three platforms: Instagram, LinkedIn, Website.
+- Each brand has its own saved details, rules, drafts, review history, and uploads. New brands start without the Volt sample rules; add and approve your guidelines using the existing **Guidelines & rules** flow.
+- In **BrandTwin**, choose platforms for the current draft and optionally upload an image or video (up to 10 MB). The selected platforms determine the available previews. Media is saved with the draft and restored when opening it as a new version.
+- Image/video uploads are for preview and attachment. Compliance analysis still checks the written marketing copy.
+- Return to **Overview → Active brand → Volt One — example brand** whenever you want to explore the original demo. Editors are recovered separately for each brand during the browser session.
+
+### Explore Volt One
+
 1. Explore the dashboard and BrandDNA graph. The fictional Volt brand starts with six approved rules.
 2. Open BrandTwin. Run the intentionally incorrect sample: the engine identifies the 500 km claim, unsupported superiority claim, and missing disclaimer, with source evidence.
 3. Apply the range correction and disclaimer. Edit out “best in the world,” or load the approved-facts sample, which uses your current rules. Recheck and save.
@@ -53,7 +63,7 @@ Open **http://localhost:3000**. API documentation: **http://127.0.0.1:8000/docs*
 
 ## Scope and next steps
 
-This is a **single-brand, local prototype**. There is no authentication or separation of creator/reviewer permissions. Only bind the API to loopback for this demo. The SQLite database is created automatically at `backend/brandforge.db`; set `BRANDFORGE_DB` to use another path.
+This is a **local prototype with separate brand workspaces**. There is no authentication or separation of creator/reviewer permissions. Only bind the API to loopback for this demo. The SQLite database is created automatically at `backend/brandforge.db`; set `BRANDFORGE_DB` to use another path. Additional brand databases are stored alongside it as `brandforge.brand-<id>.db`; media attachments are stored in the corresponding brand database. Back up these files together to preserve all workspaces.
 
 Extraction uses supported text patterns, **not an LLM**. No API key is required. Scanned PDFs need OCR, which is not included. Arbitrary natural-language rules are not interpreted. Color rules are reference data; the app does not inspect uploaded advertising images, typography, logos, or visual compliance.
 

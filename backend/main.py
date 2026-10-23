@@ -3,13 +3,16 @@ import json
 import os
 import re
 import sqlite3
+import uuid
+from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, HTTPException, UploadFile, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
 DB_PATH = os.getenv('BRANDFORGE_DB', str(Path(__file__).with_name('brandforge.db')))
@@ -23,11 +26,19 @@ SEED_RULES = [
     ('Brand voice', 'prohibited', 'cheap|insane|crazy', '', 'Use a confident, thoughtful voice. Avoid cheap, insane and crazy.', 'Brand guidelines · Voice §3.1'),
     ('Primary color', 'color', '#c5f277', '', 'Primary brand color is #c5f277.', 'Brand guidelines · Visual identity §1.2'),
 ]
+ACTIVE_BRAND = ContextVar('active_brand', default='demo')
+DEMO_BRAND = {'id': 'demo', 'name': 'Volt', 'product': 'Volt One', 'industry': 'Electric vehicles',
+              'tagline': 'The everyday, electrified', 'website': 'volt.auto',
+              'platforms': list(PLATFORMS), 'is_demo': True}
 
 
 @contextmanager
-def db():
-    connection = sqlite3.connect(DB_PATH)
+def db(catalog=False):
+    brand_id = 'demo' if catalog else ACTIVE_BRAND.get()
+    path = Path(DB_PATH)
+    if brand_id != 'demo':
+        path = path.with_name(f'{path.stem}.brand-{brand_id}.db')
+    connection = sqlite3.connect(str(path))
     connection.row_factory = sqlite3.Row
     try:
         yield connection
@@ -45,15 +56,46 @@ def initialize():
           id INTEGER PRIMARY KEY, title TEXT, content TEXT, platforms TEXT, status TEXT,
           results TEXT, dependencies TEXT, updated_at TEXT);
         CREATE TABLE IF NOT EXISTS history (
-          id INTEGER PRIMARY KEY, draft_id INTEGER, action TEXT, note TEXT, created_at TEXT);''')
-        if not c.execute('SELECT COUNT(*) FROM rules').fetchone()[0]:
+          id INTEGER PRIMARY KEY, draft_id INTEGER, action TEXT, note TEXT, created_at TEXT);
+        CREATE TABLE IF NOT EXISTS brands (
+          id TEXT PRIMARY KEY, profile TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS media (
+          id TEXT PRIMARY KEY, filename TEXT NOT NULL, mime TEXT NOT NULL, data BLOB NOT NULL);''')
+        if ACTIVE_BRAND.get() == 'demo' and not c.execute('SELECT COUNT(*) FROM rules').fetchone()[0]:
             c.executemany('INSERT INTO rules (name,kind,value,unit,evidence,source) VALUES (?,?,?,?,?,?)', SEED_RULES)
         if 'applies_when' not in {row['name'] for row in c.execute('PRAGMA table_info(rules)')}:
             c.execute("ALTER TABLE rules ADD COLUMN applies_when TEXT NOT NULL DEFAULT 'always'")
             c.execute("UPDATE rules SET applies_when='range_claim' WHERE kind='required' AND name='Range disclaimer'")
+        if 'media_id' not in {row['name'] for row in c.execute('PRAGMA table_info(drafts)')}:
+            c.execute('ALTER TABLE drafts ADD COLUMN media_id TEXT')
 
 
 initialize()
+
+
+@app.middleware('http')
+async def brand_context(request: Request, call_next):
+    brand_id = request.headers.get('X-Brand-ID', 'demo')
+    if request.url.path.startswith('/api/media/'):
+        brand_id = request.query_params.get('brand_id', brand_id)
+    if brand_id != 'demo':
+        if not re.fullmatch(r'[0-9a-f]{32}', brand_id):
+            return JSONResponse(status_code=404, content={'detail': 'Brand not found.'})
+        with db(catalog=True) as c:
+            if not c.execute('SELECT 1 FROM brands WHERE id=?', (brand_id,)).fetchone():
+                return JSONResponse(status_code=404, content={'detail': 'Brand not found.'})
+    token = ACTIVE_BRAND.set(brand_id)
+    try:
+        return await call_next(request)
+    finally:
+        ACTIVE_BRAND.reset(token)
+
+
+def active_profile():
+    if ACTIVE_BRAND.get() == 'demo':
+        return DEMO_BRAND
+    with db(catalog=True) as c:
+        return json.loads(c.execute('SELECT profile FROM brands WHERE id=?', (ACTIVE_BRAND.get(),)).fetchone()['profile'])
 
 
 def now():
@@ -120,6 +162,7 @@ class DraftInput(CleanInput):
     title: str = Field(min_length=1, max_length=120)
     content: Annotated[str, StringConstraints(strip_whitespace=False)] = Field(min_length=1, max_length=20000)
     platforms: list[Literal['Instagram', 'LinkedIn', 'Website']] = Field(min_length=1, max_length=3)
+    media_id: str | None = Field(default=None, pattern=r'^[0-9a-f]{32}$')
 
     @field_validator('content')
     @classmethod
@@ -146,6 +189,111 @@ class RuleInput(CleanInput):
     approved: bool = False
     applies_when: Literal['always', 'range_claim'] = 'always'
     version: int | None = Field(default=None, ge=1)
+
+
+class BrandInput(CleanInput):
+    name: str = Field(min_length=1, max_length=80)
+    product: str = Field(min_length=1, max_length=80)
+    industry: str = Field(default='', max_length=100)
+    tagline: str = Field(default='', max_length=160)
+    website: str = Field(default='', max_length=200)
+    platforms: list[Literal['Instagram', 'LinkedIn', 'Website']] = Field(min_length=1, max_length=3)
+
+    @field_validator('platforms')
+    @classmethod
+    def unique_platforms(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError('Select each platform only once.')
+        return value
+
+
+@app.get('/api/brands')
+def list_brands():
+    with db(catalog=True) as c:
+        return {'brands': [DEMO_BRAND, *[json.loads(row['profile']) for row in c.execute('SELECT profile FROM brands ORDER BY rowid')]]}
+
+
+@app.post('/api/brands', status_code=201)
+def create_brand(payload: BrandInput):
+    profile = {**payload.model_dump(), 'id': uuid.uuid4().hex, 'is_demo': False}
+    token = ACTIVE_BRAND.set(profile['id'])
+    try:
+        initialize()
+    finally:
+        ACTIVE_BRAND.reset(token)
+    with db(catalog=True) as c:
+        c.execute('INSERT INTO brands (id,profile) VALUES (?,?)', (profile['id'], json.dumps(profile)))
+    return profile
+
+
+@app.put('/api/brands/{brand_id}')
+def update_brand(brand_id: str, payload: BrandInput):
+    if brand_id == 'demo':
+        raise HTTPException(409, 'Keep the Volt One example as a demo. Create your own brand instead.')
+    profile = {**payload.model_dump(), 'id': brand_id, 'is_demo': False}
+    with db(catalog=True) as c:
+        if not c.execute('SELECT 1 FROM brands WHERE id=?', (brand_id,)).fetchone():
+            raise HTTPException(404, 'Brand not found.')
+        c.execute('UPDATE brands SET profile=? WHERE id=?', (json.dumps(profile), brand_id))
+    return profile
+
+
+def media_details(row):
+    return {'id': row['id'], 'filename': row['filename'], 'mime': row['mime'],
+            'kind': 'video' if row['mime'].startswith('video/') else 'image',
+            'url': f'/api/media/{row["id"]}?brand_id={ACTIVE_BRAND.get()}'}
+
+
+@app.post('/api/media', status_code=201)
+async def upload_media(file: UploadFile):
+    data = await file.read(10 * 1024 * 1024 + 1)
+    if not data:
+        raise HTTPException(422, 'Choose an image or video that is not empty.')
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(413, 'Choose an image or video no larger than 10 MB.')
+    mime = None
+    if data.startswith(b'\x89PNG\r\n\x1a\n'):
+        mime = 'image/png'
+    elif data.startswith(b'\xff\xd8\xff'):
+        mime = 'image/jpeg'
+    elif data.startswith((b'GIF87a', b'GIF89a')):
+        mime = 'image/gif'
+    elif data.startswith(b'RIFF') and data[8:12] == b'WEBP':
+        mime = 'image/webp'
+    elif data[4:8] == b'ftyp' and len(data) >= 12:
+        mime = 'video/quicktime' if data[8:12] == b'qt  ' else 'video/mp4'
+    elif data.startswith(b'\x1a\x45\xdf\xa3') and b'webm' in data[:4096]:
+        mime = 'video/webm'
+    if not mime:
+        raise HTTPException(422, 'Supported media: PNG, JPEG, GIF, WebP, MP4, WebM, MOV. The file contents must match a supported format.')
+    filename = (file.filename or 'creative').replace('\\', '/').rsplit('/', 1)[-1][:200]
+    item = {'id': uuid.uuid4().hex, 'filename': filename, 'mime': mime}
+    with db() as c:
+        c.execute('INSERT INTO media (id,filename,mime,data) VALUES (?,?,?,?)', (item['id'], filename, mime, data))
+    return media_details(item)
+
+
+@app.get('/api/media/{media_id}')
+def read_media(media_id: str, request: Request):
+    with db() as c:
+        row = c.execute('SELECT * FROM media WHERE id=?', (media_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, 'Media not found in this brand.')
+    data = row['data']
+    headers = {'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': 'private, max-age=3600'}
+    range_header = request.headers.get('range')
+    if range_header:
+        match = re.fullmatch(r'bytes=(\d*)-(\d*)', range_header)
+        if not match or not any(match.groups()):
+            return Response(status_code=416, headers={'Content-Range': f'bytes */{len(data)}'})
+        first, last = match.groups()
+        start = int(first) if first else max(0, len(data) - int(last))
+        end = min(int(last), len(data) - 1) if first and last else len(data) - 1
+        if start >= len(data) or start > end:
+            return Response(status_code=416, headers={'Content-Range': f'bytes */{len(data)}'})
+        headers['Content-Range'] = f'bytes {start}-{end}/{len(data)}'
+        return Response(data[start:end + 1], status_code=206, media_type=row['mime'], headers=headers)
+    return Response(data, media_type=row['mime'], headers=headers)
 
 
 def validate_rule(rule):
@@ -207,7 +355,9 @@ def workspace():
             for key in ('platforms', 'results', 'dependencies'):
                 item[key] = json.loads(item[key])
             drafts.append(item)
-        return {'brand': 'Volt', 'rules': rules_from(c), 'drafts': drafts,
+        profile = active_profile()
+        media = [media_details(row) for row in c.execute('SELECT id,filename,mime FROM media')]
+        return {'brand': profile['name'], 'profile': profile, 'media': media, 'rules': rules_from(c), 'drafts': drafts,
                 'history': [dict(r) for r in c.execute('SELECT * FROM history ORDER BY id DESC LIMIT 30')]}
 
 
@@ -220,9 +370,11 @@ def analyze(payload: DraftInput):
 @app.post('/api/drafts')
 def save_draft(payload: DraftInput):
     with db() as c:
+        if payload.media_id and not c.execute('SELECT 1 FROM media WHERE id=?', (payload.media_id,)).fetchone():
+            raise HTTPException(422, 'Upload the image or video in this brand before attaching it.')
         result = evaluate(payload.content, payload.platforms, rules_from(c))
-        cursor = c.execute('INSERT INTO drafts (title,content,platforms,status,results,dependencies,updated_at) VALUES (?,?,?,?,?,?,?)',
-                         (payload.title, payload.content, json.dumps(payload.platforms), 'draft', json.dumps(result), json.dumps(result['dependencies']), now()))
+        cursor = c.execute('INSERT INTO drafts (title,content,platforms,status,results,dependencies,updated_at,media_id) VALUES (?,?,?,?,?,?,?,?)',
+                         (payload.title, payload.content, json.dumps(payload.platforms), 'draft', json.dumps(result), json.dumps(result['dependencies']), now(), payload.media_id))
         return {'id': cursor.lastrowid, 'results': result}
 
 
