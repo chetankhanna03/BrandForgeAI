@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import {beforeEach,describe,expect,it,vi} from 'vitest';
 import Home from '../app/page';
 
-vi.mock('@xyflow/react',()=>({ReactFlow:({nodes,edges,children}:{nodes:unknown[];edges:unknown[];children:React.ReactNode})=><div data-testid="graph" data-nodes={JSON.stringify(nodes)} data-edges={JSON.stringify(edges)}>{children}</div>,Background:()=>null,Controls:()=>null,MarkerType:{ArrowClosed:'closed'}}));
+vi.mock('@xyflow/react',()=>({ReactFlow:({nodes,edges,children}:{nodes:unknown[];edges:unknown[];children:React.ReactNode})=><div data-testid="graph" data-nodes={JSON.stringify(nodes,(key,value)=>key==='label'&&React.isValidElement(value)?'Graph card':value)} data-edges={JSON.stringify(edges)}>{children}</div>,Background:()=>null,Controls:()=>null,MarkerType:{ArrowClosed:'closed'},Position:{Left:'left',Right:'right'}}));
 
 const baseRule={id:1,name:'Product range',kind:'fact',value:'400',unit:'km',evidence:'Approved range is 400 km.',source:'Product specification §2.1',approved:true,version:1,applies_when:'always'};
 const passing={score:100,findings:[],platforms:['Instagram','LinkedIn','Website'].map(name=>({name,passed:true,limit:2200})),engine:'Deterministic rules v1 · text only'};
