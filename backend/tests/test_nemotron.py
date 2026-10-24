@@ -18,7 +18,7 @@ def model_report(**changes):
 
 
 def finding(rule_id=3, **changes):
-    return {'rule_id': rule_id, 'media_type': 'text', 'excerpt': 'Nothing else even comes close.',
+    return {'violated': True, 'rule_id': rule_id, 'media_type': 'text', 'excerpt': 'Nothing else even comes close.',
             'severity': 'warning', 'explanation': 'This implies unsupported superiority.',
             'suggested_correction': 'Describe the approved product benefits.', 'rewrite': 'Thoughtfully designed for daily travel.',
             'confidence': 0.82, 'evidence_type': 'inferred', 'timestamp_seconds': None, **changes}
@@ -70,6 +70,53 @@ def analyze(client, provider, value=None, **changes):
     return response.json()
 
 
+def test_explicit_connection_check_requires_a_real_valid_review(client, provider):
+    response=client.post('/api/ai/check')
+    assert response.status_code==200
+    assert response.json()['status']=='ready'
+    assert response.json()['scope']=='text_connectivity'
+    assert len(provider.requests)==1
+    assert 'unit-test-server-secret' not in response.text
+    provider.value=model_report(text_reviewed=False)
+    assert client.post('/api/ai/check').json()['code']=='coverage'
+
+
+def test_connection_check_does_not_treat_invalid_credentials_as_ready(client, provider):
+    from openai import AuthenticationError
+    provider.error=AuthenticationError('provider secret must never be exposed',response=httpx.Response(401,request=httpx.Request('POST','https://integrate.api.nvidia.com/v1/chat/completions')),body={'detail':'secret'})
+    response=client.post('/api/ai/check')
+    assert response.json()['status']=='failed' and response.json()['code']=='credentials'
+    assert 'backend/.env' in response.json()['message']
+    assert 'provider secret' not in response.text and 'unit-test-server-secret' not in response.text
+
+
+def test_connection_check_offline_and_missing_key(client, provider, monkeypatch):
+    monkeypatch.setenv('BRANDFORGE_DETERMINISTIC_ONLY','true')
+    assert client.post('/api/ai/check').json()['status']=='offline'
+    assert provider.requests==[]
+    monkeypatch.setenv('BRANDFORGE_DETERMINISTIC_ONLY','false')
+    monkeypatch.delenv('NVIDIA_API_KEY')
+    assert client.post('/api/ai/check').json()['code']=='not_configured'
+
+
+def test_connection_check_is_authenticated(client, provider):
+    client.cookies.clear()
+    assert client.post('/api/ai/check').status_code==401
+
+
+@pytest.mark.parametrize('value', ['test-key', ' test-key ', 'Bearer test-key', 'bearer test-key', '  Bearer   test-key  '])
+def test_api_key_normalizes_copied_bearer_prefix_without_changing_key(monkeypatch,value):
+    monkeypatch.setenv('NVIDIA_API_KEY',value)
+    assert nemotron.api_key()=='test-key'
+    assert nemotron.configured()
+
+
+@pytest.mark.parametrize('value',['','  ','Bearer '])
+def test_empty_normalized_key_is_not_configured(monkeypatch,value):
+    monkeypatch.setenv('NVIDIA_API_KEY',value)
+    assert not nemotron.configured()
+
+
 def test_direct_checks_and_semantic_findings_are_deduplicated(client, provider):
     result = analyze(client, provider, model_report(findings=[finding(excerpt='best in the world')]),
                      content='The best in the world. 500 km.')
@@ -115,6 +162,36 @@ def test_image_ocr_numeric_claim_and_missing_disclaimer(client, provider, tiny_p
     payload = provider.requests[-1]['messages'][1]['content'][1]
     assert payload['type'] == 'image_url'
     assert payload['image_url']['url'].startswith('data:image/png;base64,')
+
+
+def test_model_cannot_add_disclosure_or_placement_conditions_to_satisfied_rules(client, provider, tiny_png):
+    media=client.post('/api/media',files={'file':('approved.png',tiny_png,'image/png')}).json()
+    transcript='400 km range. Starting at $29,999. Actual range may vary.'
+    report=model_report(visual_reviewed=True,observations=[{'channel':'visible_text','text':transcript,'certainty':'observed','timestamp_seconds':None}],findings=[
+        finding(1,media_type='image',excerpt='400 km',explanation='Range needs extra performance conditions.',rewrite=None),
+        finding(2,media_type='image',excerpt='$29,999',explanation='Price needs a tax disclaimer.',rewrite=None),
+        finding(4,media_type='image',excerpt='400 km',explanation='The disclaimer should be closer.',rewrite=None),
+    ])
+    result=analyze(client,provider,report,content=transcript,media_id=media['id'])
+    assert result['passed'] and result['findings']==[]
+
+
+def test_compliant_model_assessments_are_not_counted_as_violations(client,provider):
+    report=model_report(findings=[finding(3,violated=False,excerpt='Thoughtfully electric.',explanation='This is a brand descriptor, not a prohibited claim.'),finding(5,violated=False,excerpt='Thoughtfully electric.',explanation='No prohibited voice terms are present.')])
+    result=analyze(client,provider,report,content='Thoughtfully electric.')
+    assert result['passed'] and result['findings']==[]
+
+
+def test_exact_rule_guard_keeps_genuine_numeric_and_missing_phrase_violations(client,provider,tiny_png):
+    media=client.post('/api/media',files={'file':('bad.png',tiny_png,'image/png')}).json()
+    report=model_report(visual_reviewed=True,observations=[{'channel':'visible_text','text':'500 km. Starting at $24,999.','certainty':'observed','timestamp_seconds':None}],findings=[
+        finding(1,media_type='image',excerpt='500 km',rewrite=None),
+        finding(2,media_type='image',excerpt='$24,999',rewrite=None),
+        finding(4,media_type='image',excerpt='500 km',rewrite=None),
+    ])
+    result=analyze(client,provider,report,media_id=media['id'])
+    assert not result['passed']
+    assert {f['rule_id'] for f in result['findings']}=={1,2,4}
 
 
 def test_uncertain_visual_interpretations_and_accepting_guidance_do_not_modify_assets(client, provider, tiny_png):

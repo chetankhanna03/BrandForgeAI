@@ -20,8 +20,18 @@ class AnalysisUnavailable(Exception):
         self.code = code
 
 
+def api_key():
+    """Accept either a raw key or a copied Authorization header value."""
+    value = os.getenv('NVIDIA_API_KEY', '').strip()
+    if value.lower() == 'bearer':
+        return ''
+    if value.lower().startswith('bearer '):
+        value = value[7:].strip()
+    return value
+
+
 def configured():
-    return bool(os.getenv('NVIDIA_API_KEY', '').strip())
+    return bool(api_key())
 
 
 def deterministic_only():
@@ -65,7 +75,7 @@ def complete(schema, instruction, payload, parts=(), video=False, has_audio=Fals
             extra['media_io_kwargs'] = {'video': {'fps': -1, 'num_frames': frames}}
         # Retries are limited to transport/transient failures by the SDK. Never retry
         # malformed content or authentication errors; never echo provider exceptions.
-        with OpenAI(api_key=os.environ['NVIDIA_API_KEY'], base_url=url,
+        with OpenAI(api_key=api_key(), base_url=url,
                     timeout=45.0, max_retries=1) as client:
             response = client.chat.completions.create(
                 model=model_name(), messages=[{'role': 'system', 'content': system},
@@ -91,7 +101,7 @@ def complete(schema, instruction, payload, parts=(), video=False, has_audio=Fals
         if error.status_code == 429:
             raise AnalysisUnavailable('NVIDIA rate limit reached. Wait and retry the analysis.', 'rate_limited') from None
         if error.status_code in (401, 403):
-            raise AnalysisUnavailable('NVIDIA rejected the server credentials or model access. Check backend configuration.', 'credentials') from None
+            raise AnalysisUnavailable('NVIDIA rejected the configured API key or model access. Set a valid NVIDIA API Catalog key in backend/.env (NVIDIA_API_KEY), confirm access to the configured model, then restart the backend.', 'credentials') from None
         if error.status_code in (400, 404, 413, 422):
             raise AnalysisUnavailable('The configured NVIDIA endpoint rejected this model or media payload. Check model access and supported formats.', 'unsupported_request') from None
         raise AnalysisUnavailable('NVIDIA is temporarily unavailable. Retry the analysis.', 'provider_failed') from None
@@ -107,7 +117,17 @@ def review(payload, parts=(), **kwargs):
         'Review images/video for visible text, logo descriptions, prohibited elements, scene branding and disclosure conflicts. '
         'For video, review narration and spoken claims when audio is supplied; return observed timestamps in seconds only when supported. '
         'Extract all legible visible text and intelligible speech into observations, with channel and certainty. '
+        'visible_text and speech observations must be VERBATIM transcriptions only: no commentary, rule evaluation, '
+        'approved values not actually seen, or descriptions of what is missing. Put scene descriptions in visual observations. '
         'Report only findings tied to an actual approved rule ID. A compliant paraphrase is not a violation unless an exact phrase is required. '
+        'Report VIOLATIONS, never report compliance or the mere presence of a rule-related claim as a finding. '
+        'Set violated=false for every satisfied, compliant, or inapplicable rule assessment; these are not violations. '
+        'Prefer findings=[] when there are no violations. A positive explanation such as satisfies the rule or no violation must never have violated=true. '
+        'For example: a 400 km claim satisfies an approved 400 km fact, and $29,999 satisfies a 29999 USD fact. '
+        'A required disclaimer present anywhere in the same creative satisfies a required-phrase rule unless that rule explicitly constrains placement. '
+        'Never add taxes/fees disclosures, proximity/layout requirements, performance conditions, or other policies absent from approved_rules. '
+        'A prohibited-phrase rule does not prohibit every other marketing phrase: Thoughtfully electric is not an absolute superiority or environmental claim. '
+        'limitations lists only genuine coverage/visibility uncertainty, not additional brand policies or speculative violations. '
         'Do not duplicate deterministic_findings on the same rule and copy excerpt. '
         'Absent a visual reference, do not claim an exact logo mismatch. Color descriptions are uncertain; sampled_palette is measured context, '
         'not proof of where brand colors must occur. Missing or ambiguous evidence requires human review, never a fabricated certainty. '

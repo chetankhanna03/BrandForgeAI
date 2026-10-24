@@ -23,6 +23,7 @@ class Observation(StrictOutput):
 
 
 class SemanticFinding(StrictOutput):
+    violated: bool = Field(description='True only when the cited approved rule is actually violated. False for a compliant claim, a satisfied disclaimer, or a rule that does not apply.')
     rule_id: int = Field(ge=1)
     media_type: MediaType
     excerpt: str = Field(max_length=2000)

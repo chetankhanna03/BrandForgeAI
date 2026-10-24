@@ -1,5 +1,6 @@
 """Combine measurable checks and semantic observations without granting an AI approval."""
 import hashlib
+import re
 
 from . import nemotron
 from .media_processing import inspect_image, inspect_video, InvalidMedia
@@ -103,6 +104,18 @@ def build_report(payload, rules, media, evaluate):
                 if finding.timestamp_seconds is not None and (finding.media_type != 'video' or
                     finding.timestamp_seconds > result['media_inspection']['duration_seconds']):
                     raise nemotron.AnalysisUnavailable('The model cited an invalid video timestamp.', 'invalid_output')
+                if not finding.violated:
+                    continue
+                # Exact rule predicates take precedence over a model's interpretation.
+                # Do not invent placement/tax conditions for a satisfied phrase/fact.
+                asset_copy = payload.content if finding.media_type == 'text' else '\n'.join(o.text for o in observations)
+                if rule['kind'] == 'required' and (finding.media_type == 'text' or observations):
+                    if not any(item.get('rule_id') == rule['id'] for item in evaluate(asset_copy, [], [rule])['findings']):
+                        continue
+                if rule['kind'] == 'fact':
+                    unit_pattern = r'\d[\d,.]*\s*(?:km|kilometers?|kilometres?)\b' if rule['unit'] == 'km' else r'\$\s*\d|\bUSD\s+\d|\d\s+USD\b'
+                    if re.search(unit_pattern, finding.excerpt, re.I) and not any(item.get('rule_id') == rule['id'] for item in evaluate(finding.excerpt, [], [rule])['findings']):
+                        continue
                 if any(existing['rule_id'] == finding.rule_id and existing['media_type'] == finding.media_type and (
                     rule['kind'] == 'required' or existing.get('matched') and existing['matched'].casefold() in finding.excerpt.casefold()
                 ) for existing in result['findings']):
