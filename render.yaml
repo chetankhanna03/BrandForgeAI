@@ -1,0 +1,27 @@
+# One public service runs Next.js and FastAPI behind the same HTTPS URL.
+# Free instances sleep and have temporary storage. See docs/RENDER_DEPLOYMENT.md.
+services:
+  - type: web
+    name: brandforge-ai
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: NVIDIA_MODEL
+        value: nvidia/nemotron-3-nano-omni-30b-a3b-reasoning
+      - key: NVIDIA_BASE_URL
+        value: https://integrate.api.nvidia.com/v1
+      - key: BRANDFORGE_DETERMINISTIC_ONLY
+        value: "false"
+      - key: BRANDFORGE_DEMO_LOGIN
+        value: "true"
+      - key: BRANDFORGE_OWNER_SETUP
+        value: "false"
+      - key: BRANDFORGE_SECURE_COOKIE
+        value: "true"
+      - key: BRANDFORGE_DB
+        value: /var/data/brandforge.db

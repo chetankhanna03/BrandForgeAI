@@ -20,6 +20,10 @@ def demo_enabled():
     return os.getenv('BRANDFORGE_DEMO_LOGIN', 'true').lower() == 'true'
 
 
+def owner_setup_enabled():
+    return os.getenv('BRANDFORGE_OWNER_SETUP', 'true').lower() == 'true'
+
+
 class Credentials(BaseModel):
     username: str = Field(min_length=1, max_length=80, pattern=r'^[a-zA-Z0-9_.@-]+$')
     password: str = Field(min_length=12, max_length=256)
@@ -95,13 +99,15 @@ def install_auth(app, catalog_db, demo_namespace, initialize_demo):
     @app.get('/api/auth/status')
     def status(request: Request):
         account = session(request)
-        return {'authenticated': bool(account), 'setup_required': owner() is None,
+        return {'authenticated': bool(account), 'setup_required': owner_setup_enabled() and owner() is None,
                 'username': account['username'] if account else None,
                 'role': account['role'] if account else None,
                 'demo': {'enabled': demo_enabled(), **({'username':DEMO_USERNAME,'password':DEMO_PASSWORD} if demo_enabled() else {})}}
 
     @app.post('/api/auth/setup', status_code=201)
     def setup(payload: Credentials, request: Request, response: Response):
+        if not owner_setup_enabled():
+            raise HTTPException(403, 'Owner setup is disabled for this hosted demo. Use the judge demo login.')
         account = session(request)
         if account and account['role']=='judge':
             raise HTTPException(403, 'The judge demo cannot configure the private owner account.')

@@ -2,6 +2,10 @@
 
 A local hackathon prototype of **BrandDNA + BrandTwin**, built with Next.js, React, Tailwind CSS, React Flow, FastAPI, PyMuPDF, and SQLite.
 
+## Deploy on Render
+
+Use the root [render.yaml](render.yaml) Blueprint to deploy the frontend and backend together as one free web service. Add your NVIDIA key in Render when prompted. See [deployment steps, free-plan limitations, and persistent storage](docs/RENDER_DEPLOYMENT.md). The hosted judge demo has secure cookies and disables public owner signup. Free instances sleep and reset local data on restarts.
+
 ## Run on Windows
 
 From the project directory, install dependencies once:

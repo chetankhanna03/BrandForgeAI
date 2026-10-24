@@ -36,6 +36,27 @@ def test_owner_setup_login_cookie_and_logout(client):
     assert client.cookies.get(COOKIE) not in str(session)
 
 
+def test_hosted_demo_disables_owner_claim_but_allows_judges(client, monkeypatch):
+    monkeypatch.setenv('BRANDFORGE_OWNER_SETUP', 'false')
+    assert client.get('/api/auth/status').json()['setup_required'] is False
+    assert client.post('/api/auth/setup', json=CREDS).status_code == 403
+    assert client.post('/api/auth/login', json={'username': DEMO_USERNAME, 'password': DEMO_PASSWORD}).status_code == 200
+    assert client.get('/api/workspace').status_code == 200
+    with main.db(catalog=True, owner_catalog=True) as c:
+        assert c.execute('SELECT COUNT(*) FROM owner_account').fetchone()[0] == 0
+
+
+def test_hosted_origin_uses_secure_cookie_and_rejects_other_sites(client, monkeypatch):
+    monkeypatch.setenv('BRANDFORGE_OWNER_SETUP', 'false')
+    monkeypatch.setenv('BRANDFORGE_FRONTEND_ORIGIN', 'https://brandforge-example.onrender.com')
+    monkeypatch.setenv('BRANDFORGE_SECURE_COOKIE', 'true')
+    credentials = {'username': DEMO_USERNAME, 'password': DEMO_PASSWORD}
+    assert client.post('/api/auth/login', json=credentials, headers={'Origin': 'https://another-site.example'}).status_code == 403
+    response = client.post('/api/auth/login', json=credentials, headers={'Origin': 'https://brandforge-example.onrender.com'})
+    assert response.status_code == 200
+    assert 'Secure' in response.headers['set-cookie']
+
+
 def test_displayed_judge_credentials_work_without_changing_the_owner(client):
     client.post('/api/auth/setup',json=CREDS)
     owner_draft=client.post('/api/drafts',json={'title':'Private owner draft','content':'Private marketing copy.','platforms':['Instagram']}).json()['id']

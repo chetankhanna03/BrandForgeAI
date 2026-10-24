@@ -4,6 +4,7 @@ import path from 'node:path';
 // Keep production builds from replacing a running dev server's webpack modules.
 const nextConfig = (phase: string): NextConfig => ({
   distDir: phase === PHASE_DEVELOPMENT_SERVER ? '.next-dev' : '.next',
+  output: 'standalone',
   outputFileTracingRoot: path.resolve(process.cwd()),
   experimental: {proxyTimeout: 180000},
   async rewrites() {
