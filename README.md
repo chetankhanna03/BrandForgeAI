@@ -33,6 +33,21 @@ For NVIDIA analysis, configure `backend/.env` using [backend/.env.example](backe
 
 ## Five-minute demo
 
+### Guided walkthrough and judge kit
+
+After signing in, first-time visitors see a skippable, detailed spotlight tour. Use **Start walkthrough** in the header to replay it. Each tab is highlighted and must be clicked by the user before the tour continues; the tour never changes tabs itself. Next/Back and arrow keys move through explanations, but cannot bypass a required tab click. Escape, reduced-motion preferences, and small viewports are supported. The tour explains BrandDNA, BrandTwin, media checks, source evidence, the library, and human approval.
+
+The welcome is shown again after every successful login or first-owner setup, even on a browser where an earlier visitor skipped or completed it. Refreshing within the same signed-in session does not reopen it. The access page displays a separate judge-demo ID and password with a one-click sign-in. Each judge login gets a fresh, isolated data sandbox; sign out between judges to trigger a new welcome. The private owner account remains separate. Starting the judge demo remains an explicit action and creates an isolated lab.
+
+The final **Start judge demo** action and **Prepare judge demo** both create a fresh isolated lab and open BrandTwin with the first PNG and its caption loaded. It does not fabricate or automatically run an analysis: use **Run compliance check**, then load the other poster from the judge demo controls. A pending launch survives a refresh and is consumed only after the poster loads successfully. Preparation failures leave the final tour step open for retry. **Check Nemotron connection** makes an explicit live text probe; success confirms text connectivity, not successful image/video analysis. Rejected credentials remain a visible failure with setup guidance.
+
+On **Overview**, find the **Judge demo kit** and select **Prepare judge demo**. It creates a separate **Volt Demo Lab** with six approved rules and does not reset any existing brand. The two PNG posters and sample guidelines are downloadable. **Try this poster** uploads the actual PNG and loads its matching caption in BrandTwin; select **Run compliance check** to run the configured analysis service.
+
+- Sample A uses 400 km, $29,999, and the required range disclaimer.
+- Sample B deliberately uses 500 km, $24,999, an unsupported “best in the world” claim, and omits the disclaimer.
+
+These are clearly labeled testing fixtures, not precomputed AI outcomes. Nemotron checks require the configured server-side key; unavailable or failed analysis remains incomplete. Editing the lab rules changes the expected comparison. **Create a fresh demo lab** makes another isolated workspace rather than overwriting edited data. The walkthrough is also intended for ordinary users.
+
 ### Use your own brand
 
 - In **Overview**, choose **Add your brand**. Enter a brand name and product/service, then optionally add an industry, tagline, and website/account handle. Select one, two, or all three platforms: Instagram, LinkedIn, Website.
@@ -45,7 +60,7 @@ For NVIDIA analysis, configure `backend/.env` using [backend/.env.example](backe
 
 1. Explore the dashboard and BrandDNA graph. The fictional Volt brand starts with six approved rules.
 2. Open BrandTwin. Run the intentionally incorrect sample: the engine identifies the 500 km claim, unsupported superiority claim, and missing disclaimer, with source evidence.
-3. Apply the range correction and disclaimer. Edit out “best in the world,” or load the approved-facts sample, which uses your current rules. Recheck and save.
+3. Edit the range and add the disclaimer manually in the editor. Edit out “best in the world,” or load the approved-facts sample, which uses your current rules. Recheck and save.
 4. Open Content library and submit the passing draft. Open Approvals and approve it.
 5. Open Guidelines & rules. Change the approved range from 400 to 350 and update its evidence. The saved draft now needs review, and the graph shows its dependencies.
 6. Upload `samples/volt-guidelines.md` or a text-based PDF. Review extracted candidates before saving; edit existing facts to avoid duplicates.
@@ -54,7 +69,7 @@ For NVIDIA analysis, configure `backend/.env` using [backend/.env.example](backe
 
 - Persistent SQLite workspace, rules, drafts, and review history.
 - Deterministic checks for kilometer range, dollar price, prohibited phrases, required disclaimers, and configured platform character limits.
-- Source citations and rule versions on findings; numeric and missing-phrase corrections can be applied in the editor.
+- Source citations and rule versions on findings; suggested corrections guide manual edits in the editor.
 - Instagram, LinkedIn, and website preview mockups.
 - React Flow graph with rule-to-draft dependencies.
 - PDF/TXT/Markdown pattern + Nemotron extraction, including rendered image-based pages, with human confirmation.
@@ -68,7 +83,7 @@ For NVIDIA analysis, configure `backend/.env` using [backend/.env.example](backe
 
 ## Scope and next steps
 
-This is a **local prototype with separate brand workspaces and a single authenticated owner**. The owner controls creation and review; separate creator/reviewer accounts are not implemented. Only bind the API to loopback for this demo. The SQLite database is created automatically at `backend/brandforge.db`; set `BRANDFORGE_DB` to use another path. Additional brand databases are stored alongside it as `brandforge.brand-<id>.db`; media attachments are stored in the corresponding brand database. Back up these files together to preserve all workspaces.
+This is a **local prototype with a private owner account and isolated judge-demo sessions**. The owner controls creation and review; separate creator/reviewer accounts are not implemented. Only bind the API to loopback for this demo. The SQLite database is created automatically at `backend/brandforge.db`; set `BRANDFORGE_DB` to use another path. Additional brand databases are stored alongside it as `brandforge.brand-<id>.db`; media attachments are stored in the corresponding brand database. Back up these files together to preserve all workspaces.
 
 Nemotron analysis requires a valid server-side NVIDIA API Catalog key. Uploaded content is untrusted data and never becomes an active rule without human approval. Explicit offline mode (`BRANDFORGE_DETERMINISTIC_ONLY=true`) retains the text-pattern demo but cannot pass semantic or media checks. Visual interpretation and model-read text/speech can be uncertain. Sampled image pixels are measured context, not exact brand color certification. Video samples can miss brief scenes. See the integration guide for all limits and known gaps.
 
@@ -86,3 +101,7 @@ npm run build
 ```
 
 Backend tests use isolated temporary SQLite databases and cover evidence, approvals, knowledge invalidation, file extraction, and validation boundaries. React interaction tests use JSDOM with mocked API responses and graph rendering; they do not replace visual testing in a real browser.
+
+## Judge demo access
+
+The signup/sign-in page shows **ID `judge`** and **password `BrandForgeDemo2026!`**, plus **Sign in to judge demo**. These are intentionally public testing credentials, not the private owner credentials. Each successful judge login creates a fresh sandbox containing the Volt sample rules. Judges can create demo brands, upload creatives, check content, and review drafts inside that sandbox. They cannot list, fetch, or change the owner's brand data, and a later judge cannot read an earlier judge's sandbox. Owner credentials are never reset or displayed. Demo activity uses the configured backend/Nemotron service. Set `BRANDFORGE_DEMO_LOGIN=false` and restart the backend to disable demo sign-in.

@@ -1,0 +1,16 @@
+VOLT ONE — HACKATHON TEST FIXTURE
+This fictional brand and these example rules are supplied for demonstration only.
+
+Product range: Volt One has an approved driving range of 400 km.
+Starting price: Volt One starts at $29,999.
+Prohibited phrases: zero emissions, best in the world, 100% sustainable
+Range disclaimer: Actual range may vary.
+The range disclaimer is required when content mentions a numeric driving range.
+Avoid: cheap, insane, crazy
+Primary brand color: #c5f277
+
+Sample A uses the approved facts and includes the disclaimer.
+Sample B intentionally claims 500 km and $24,999, says "best in the world",
+and omits the range disclaimer. These are expected test differences, not AI results.
+Uploaded images are reviewed by the actual configured analysis service.
+Missing AI configuration or failed analysis must be shown as incomplete.

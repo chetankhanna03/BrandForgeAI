@@ -5,6 +5,8 @@ import {beforeEach,describe,expect,it,vi} from 'vitest';
 import Home from '../app/page';
 import {demoBrand, type Brand} from '../app/brand-setup';
 import type {BrandMedia} from '../app/brand-media';
+import {tourSteps} from '../app/walkthrough-steps';
+import {demoSamples} from '../app/demo-kit';
 
 vi.mock('@xyflow/react',()=>({ReactFlow:({nodes,edges,children}:{nodes:unknown[];edges:unknown[];children:React.ReactNode})=><div data-testid="graph" data-nodes={JSON.stringify(nodes,(key,value)=>key==='label'&&React.isValidElement(value)?'Graph card':value)} data-edges={JSON.stringify(edges)}>{children}</div>,Background:()=>null,Controls:()=>null,MarkerType:{ArrowClosed:'closed'},Position:{Left:'left',Right:'right'}}));
 
@@ -23,12 +25,114 @@ function posted(path:string){return fetchMock.mock.calls.filter(([url])=>url===`
 function body(path:string){return JSON.parse(posted(path).at(-1)?.[1]?.body as string);}
 beforeEach(()=>{
   sessionStorage.clear();vi.restoreAllMocks();
+  localStorage.setItem('brandforge-walkthrough-v2','skipped');
   workspace={rules:[{...baseRule}],drafts:[],history:[]};
   handler=(url,init)=>url==='/api/workspace'?json(workspace):url==='/api/analyze'?json(passing):url==='/api/drafts'?json({id:1,results:passing}):url==='/api/extract'?json({candidates:[]}):json({updated:true});
   fetchMock=vi.fn((url:string,init?:RequestInit)=>url==='/api/auth/status'?json({authenticated:true,setup_required:false}):handler(url,init));vi.stubGlobal('fetch',fetchMock);
 });
 
 describe('workspace navigation and recovery',()=>{
+  it('walks through the real workspace controls only after actual sidebar clicks',async()=>{
+    handler=url=>{
+      if(url==='/api/demo/workspace'){
+        const profile={...demoBrand,id:'a'.repeat(32),name:'Volt Demo Lab',is_demo:false,demo_fixture:'volt-v1'};
+        workspace.profile=profile;return json(profile,201);
+      }
+      if(url==='/demo/volt-approved.png')return Promise.resolve({ok:true,blob:async()=>new Blob(['PNG fixture'],{type:'image/png'})} as Response);
+      if(url==='/api/media')return json({id:'first-poster',filename:'volt-approved.png',mime:'image/png',kind:'image',url:'/api/media/first-poster'},201);
+      return json(workspace);
+    };
+    await ready();await userEvent.click(screen.getByRole('button',{name:'Start walkthrough'}));
+    await userEvent.click(screen.getByRole('button',{name:'Show me around'}));
+    for(let index=0;index<tourSteps.length;index++){
+      const step=tourSteps[index];
+      expect(screen.getByRole('heading',{name:step.title})).toBeInTheDocument();
+      if(step.action==='navigate'){
+        expect(screen.getByRole('button',{name:'Next'})).toBeDisabled();
+        const tab=screen.getByRole('button',{name:step.tab==='Guidelines'?'Guidelines & rules':step.tab});
+        await userEvent.click(tab);expect(tab).toHaveAttribute('aria-current','page');
+      }else{
+        expect(document.querySelector(`[data-tour="${step.target}"]`)??document.querySelector(`[data-tour="${step.fallback}"]`)).not.toBeNull();
+        await userEvent.click(screen.getByRole('button',{name:index===tourSteps.length-1?'Start judge demo':'Next'}));
+      }
+    }
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await screen.findByRole('heading',{name:'Create once. Check everywhere.'});
+    expect(screen.getByLabelText('Content title')).toHaveValue(demoSamples.approved.title);
+    expect(screen.getByRole('button',{name:'Remove attached media'})).toBeInTheDocument();
+    expect(screen.getByText('Judge demo is ready')).toBeInTheDocument();
+    expect(posted('demo/workspace')).toHaveLength(1);expect(posted('media')).toHaveLength(1);expect(posted('analyze')).toHaveLength(0);
+  },15000);
+  it('replays the walkthrough from its persistent header entry',async()=>{
+    await ready();await userEvent.click(screen.getByRole('button',{name:'Start walkthrough'}));
+    expect(screen.getByRole('dialog')).toHaveTextContent('Now let’s connect the dots.');
+    await userEvent.click(screen.getByRole('button',{name:'Show me around'}));
+    expect(screen.getByRole('heading',{name:'Click Overview to begin.'})).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button',{name:'Skip tour'}));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+  it('prepares an isolated judge workspace and opens it',async()=>{
+    handler=(url)=>{
+      if(url==='/api/demo/workspace'){
+        const profile={...demoBrand,id:'a'.repeat(32),name:'Volt Demo Lab',is_demo:false,demo_fixture:'volt-v1'};
+        workspace.profile=profile;return json(profile,201);
+      }
+      if(url==='/demo/volt-approved.png')return Promise.resolve({ok:true,blob:async()=>new Blob(['PNG fixture'],{type:'image/png'})} as Response);
+      if(url==='/api/media')return json({id:'manual-demo-poster',filename:'volt-approved.png',mime:'image/png',kind:'image',url:'/api/media/manual-demo-poster'},201);
+      return json(workspace);
+    };
+    await ready();await userEvent.click(screen.getByRole('button',{name:'Prepare judge demo'}));
+    await screen.findByText('Judge demo is ready');
+    await screen.findByDisplayValue(demoSamples.approved.title);
+    expect(body('demo/workspace')).toEqual({});expect(sessionStorage.getItem('brandforge-active-brand')).toBe('a'.repeat(32));
+    expect(posted('media')).toHaveLength(1);expect(sessionStorage.getItem('brandforge-demo-launch')).toBeNull();
+  });
+  it('explains a stale running backend instead of silently failing to open the demo',async()=>{
+    handler=url=>url==='/api/demo/workspace'?json({detail:'Not Found'},404):json(workspace);
+    await ready();await userEvent.click(screen.getByRole('button',{name:'Prepare judge demo'}));
+    expect(await screen.findByRole('alert')).toHaveTextContent('The running backend does not have the judge demo route.');
+    expect(sessionStorage.getItem('brandforge-demo-launch')).toBeNull();
+  });
+  it('resumes an unfinished demo launch after refresh without creating another workspace',async()=>{
+    const id='a'.repeat(32);sessionStorage.setItem('brandforge-active-brand',id);sessionStorage.setItem('brandforge-demo-launch',id);
+    workspace.profile={...demoBrand,id,name:'Volt Demo Lab',is_demo:false,demo_fixture:'volt-v1'};
+    handler=url=>{
+      if(url==='/demo/volt-approved.png')return Promise.resolve({ok:true,blob:async()=>new Blob(['PNG fixture'],{type:'image/png'})} as Response);
+      if(url==='/api/media')return json({id:'resumed-poster',filename:'volt-approved.png',mime:'image/png',kind:'image',url:'/api/media/resumed-poster'},201);
+      return json(workspace);
+    };
+    render(<Home/>);await screen.findByDisplayValue(demoSamples.approved.title);
+    expect(screen.getByRole('button',{name:'Remove attached media'})).toBeInTheDocument();
+    expect(posted('demo/workspace')).toHaveLength(0);expect(posted('media')).toHaveLength(1);expect(sessionStorage.getItem('brandforge-demo-launch')).toBeNull();
+  });
+  it('keeps failed poster setup retryable rather than consuming the pending launch',async()=>{
+    const id='a'.repeat(32);sessionStorage.setItem('brandforge-active-brand',id);sessionStorage.setItem('brandforge-demo-launch',id);
+    workspace.profile={...demoBrand,id,name:'Volt Demo Lab',is_demo:false,demo_fixture:'volt-v1'};
+    let fail=true;
+    handler=url=>{
+      if(url==='/demo/volt-approved.png')return Promise.resolve(fail?{ok:false} as Response:{ok:true,blob:async()=>new Blob(['PNG fixture'],{type:'image/png'})} as Response);
+      if(url==='/api/media')return json({id:'retried-poster',filename:'volt-approved.png',mime:'image/png',kind:'image',url:'/api/media/retried-poster'},201);
+      return json(workspace);
+    };
+    render(<Home/>);expect(await screen.findByRole('alert')).toHaveTextContent('Could not load the sample poster.');
+    expect(sessionStorage.getItem('brandforge-demo-launch')).toBe(id);
+    fail=false;await userEvent.click(screen.getByRole('button',{name:'Load approved poster'}));
+    await screen.findByDisplayValue(demoSamples.approved.title);expect(sessionStorage.getItem('brandforge-demo-launch')).toBeNull();
+  });
+  it('loads an actual demo PNG and caption without inventing an analysis result',async()=>{
+    workspace.profile={...demoBrand,id:'a'.repeat(32),name:'Volt Demo Lab',is_demo:false,demo_fixture:'volt-v1'};
+    handler=(url)=>{
+      if(url==='/demo/volt-violations.png')return Promise.resolve({ok:true,blob:async()=>new Blob(['PNG fixture'],{type:'image/png'})} as Response);
+      if(url==='/api/media')return json({id:'poster-id',filename:'volt-violations.png',mime:'image/png',kind:'image',url:'/api/media/poster-id'},201);
+      return json(workspace);
+    };
+    await ready();await userEvent.click(screen.getAllByRole('button',{name:'Try this poster'})[1]);
+    await screen.findByRole('heading',{name:'Create once. Check everywhere.'});
+    expect(screen.getByLabelText('Content title')).toHaveValue('Volt One · Find the four issues');
+    expect((screen.getByLabelText(/Marketing copy/) as HTMLTextAreaElement).value).toContain('500 km');
+    expect(screen.getByRole('button',{name:'Remove attached media'})).toBeInTheDocument();
+    expect(posted('media')).toHaveLength(1);expect(posted('analyze')).toHaveLength(0);
+  });
   it('loads live counts and each navigation destination',async()=>{
     await ready();
     expect(screen.getByText('Your next great idea starts here.')).toBeInTheDocument();
@@ -93,18 +197,19 @@ describe('BrandTwin editor and checks',()=>{
     await userEvent.click(screen.getByRole('button',{name:'Preview Website'}));expect(screen.getByText('Discover Volt One')).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button',{name:'Preview Instagram'}));expect(screen.getByText('Sponsored · Original audio')).toBeInTheDocument();
   });
-  it('shows evidence and safely replaces the specified Unicode occurrence',async()=>{
-    handler=(url)=>url==='/api/analyze'?json({...passing,score:85,findings:[rangeFinding]}):json(workspace);
-    await studio();fireEvent.change(screen.getByLabelText(/Marketing copy/),{target:{value:'⚡ 🚗 500 km then 500 km'}});
+  it('shows a numeric suggestion without changing copy or removing findings',async()=>{
+    handler=url=>url==='/api/analyze'?json({...passing,score:85,findings:[rangeFinding]}):json(workspace);
+    await studio();const copy='500 km then 500 km';fireEvent.change(screen.getByLabelText(/Marketing copy/),{target:{value:copy}});
     await userEvent.click(screen.getByRole('button',{name:'Run compliance check'}));await screen.findByText(baseRule.evidence);
-    expect(screen.getByText(baseRule.source)).toBeInTheDocument();await userEvent.click(screen.getByRole('button',{name:'Apply'}));
-    expect(screen.getByLabelText(/Marketing copy/)).toHaveValue('⚡ 🚗 400 km then 500 km');expect(screen.queryByText(baseRule.evidence)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button',{name:'Apply'})).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Marketing copy/)).toHaveValue(copy);expect(screen.getByText(baseRule.source)).toBeInTheDocument();
   });
-  it('appends a real missing disclaimer and clears obsolete results',async()=>{
+  it('keeps missing-disclaimer guidance visible without appending it automatically',async()=>{
     handler=url=>url==='/api/analyze'?json({...passing,findings:[{...rangeFinding,title:'Disclaimer',fix:{kind:'append',text:'Actual range may vary.'}}]}):json(workspace);
-    await studio();await userEvent.click(screen.getByRole('button',{name:'Run compliance check'}));await screen.findByText('Disclaimer');
-    await userEvent.click(screen.getByRole('button',{name:'Apply'}));expect((screen.getByLabelText(/Marketing copy/) as HTMLTextAreaElement).value).toContain('\n\nActual range may vary.');
-    expect(screen.queryByText('Disclaimer')).not.toBeInTheDocument();
+    await studio();const copy=(screen.getByLabelText(/Marketing copy/) as HTMLTextAreaElement).value;
+    await userEvent.click(screen.getByRole('button',{name:'Run compliance check'}));await screen.findByText('Disclaimer');
+    expect(screen.queryByRole('button',{name:'Apply'})).not.toBeInTheDocument();expect(screen.getByLabelText(/Marketing copy/)).toHaveValue(copy);
+    expect(screen.getByText('Disclaimer')).toBeInTheDocument();
   });
   it('never offers to append content-length instructions',async()=>{
     handler=url=>url==='/api/analyze'?json({...passing,findings:[{...rangeFinding,title:'Content length',suggestion:'Shorten to 2,200 characters.',matched:'',fix:null}]}):json(workspace);

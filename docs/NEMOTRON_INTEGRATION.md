@@ -45,7 +45,7 @@ Guidelines → proposed rules → human approval → BrandTwin text/creative che
 - Only an explicit owner action approves a rule. Model proposals are always unapproved.
 - Findings cite actual approved rule IDs and versions. Unknown rule IDs, absent media, invalid timestamps, invented copy excerpts, malformed JSON, truncated responses, or incomplete coverage invalidate the analysis.
 - Duplicate findings on the same rule, asset, and literal violation are suppressed. Distinct claims and different assets remain separate findings.
-- Accepting a suggested correction records intent. It never removes the finding, waives compliance, modifies an original media asset, or marks a draft approved. Text rewrites require an explicit “Approve and apply,” followed by a new check. Media guidance requires editing and re-uploading the original creative.
+- Accepting a suggested correction records intent. It never removes the finding, waives compliance, edits the caption, modifies an original media asset, or marks a draft approved. Edit text manually in the editor and recheck. Media guidance requires editing and re-uploading the original creative. Automatic Apply actions are not available.
 - Provider errors leave exact findings visible, set the score to null, and block submission/approval on the server. A missing score is shown as “Incomplete,” not `0%` or `100%`.
 - Existing drafts without an analysis status are migrated to `needs_review` instead of inheriting an unearned multimodal pass.
 
@@ -60,7 +60,9 @@ The backend uses the OpenAI-compatible client against `/v1/chat/completions`. It
 
 The model is prompted for one JSON object matching a Pydantic schema. JSON is validated locally; the implementation does not assume the hosted endpoint supports every OpenAI structured-output parameter. Thinking is disabled for bounded extraction/review responses. Temperature is 0.2, response budget 7,000 tokens, request timeout 45 seconds, and SDK retries are limited to one transient retry. There are at most two concurrent model calls per backend process. SDK/provider retry-after delays can extend total request time; the UI and Next.js proxy allow 180 seconds.
 
-An initial live text probe reached NVIDIA but received HTTP 401 for the credential configured at implementation time. Therefore successful live inference, image payload acceptance, and video/audio inference on that account have not been demonstrated. The documented payload and fail-closed behavior are covered by mocks. Supply a valid NVIDIA API Catalog key and run the live checklist below; do not assume an API key from another provider works here.
+The initial HTTP 401 was traced to a saved key value containing a `Bearer ` prefix: the SDK added another prefix. The client now normalizes a copied Bearer value before sending it; no credential needs to be printed or rewritten. Live text inference and actual PNG requests subsequently succeeded. The approved poster passed the combined text/image checks with zero findings. The deliberately incorrect judge poster produced grounded range, price, prohibited-claim, and missing-disclaimer findings in both its caption and observed image text. Video/audio inference remains a separate live verification step; a working text or image request does not establish video coverage.
+
+Model assessments now include an explicit `violated` boolean. Compliant assessments are not counted as errors, and deterministic checks take precedence when a model adds conditions not present in an exact numeric or required-phrase rule. OCR observations are prompted as verbatim text rather than commentary. Report cache fingerprints use analysis engine version 3 to avoid reusing results from the previous interpretation contract. Model output still requires human review; these improvements do not guarantee every future interpretation is correct.
 
 ## Media and guideline limits
 
@@ -81,9 +83,9 @@ Instruction isolation, strict validation, and the absence of tools/credentials i
 
 ## Authentication and storage
 
-The local app now requires a single owner login. Setup is limited to loopback and only works before an owner exists. Passwords use salted PBKDF2-SHA256 with 600,000 iterations. Eight failed login attempts per client address within 15 minutes trigger rate limiting. Sessions use random tokens, store only token hashes server-side, expire after eight hours, and are revoked on logout.
+Private workspaces require the owner login. The access page also offers intentionally public judge-demo credentials, enabled by BRANDFORGE_DEMO_LOGIN=true (the local hackathon default). Each successful judge login receives a new server-side namespace and separate catalog/brand databases; it cannot enumerate or read the owner data or another judge session. Demo sign-ins do not reset owner login rate limits. Set the option to false and restart to disable these credentials. Setup is limited to loopback and only works before an owner exists. Passwords use salted PBKDF2-SHA256 with 600,000 iterations. Eight failed login attempts per client address within 15 minutes trigger rate limiting. Sessions use random tokens, store only token hashes server-side, expire after eight hours, and are revoked on logout.
 
-Cookies are HttpOnly and SameSite Strict. Unsafe browser requests check the configured frontend Origin. All brand, media, extraction, analysis, rule, report-review, and draft routes require an authenticated owner. `brand_id` selects data only after this check. Media uses the same authenticated cookie, including video range requests. Set `BRANDFORGE_SECURE_COOKIE=true` behind HTTPS and configure the exact frontend origin when moving beyond the loopback demo.
+Cookies are HttpOnly and SameSite Strict. Unsafe browser requests check the configured frontend Origin. All brand, media, extraction, analysis, rule, report-review, and draft routes require an authenticated owner or judge session. Owner requests use the private catalog; judge requests are forced into their server-issued isolated sandbox namespace. `brand_id` selects data only after this check. Media uses the same authenticated cookie, including video range requests. Set `BRANDFORGE_SECURE_COOKIE=true` behind HTTPS and configure the exact frontend origin when moving beyond the loopback demo.
 
 This is a single-owner access model, not a multi-tenant account/invitation/role-management system. No password reset or account recovery UI is provided. Production deployment still needs operational account recovery, transport/security configuration, and infrastructure controls.
 
@@ -117,6 +119,7 @@ New routes:
 | `POST /api/auth/setup` | First local owner account. |
 | `POST /api/auth/login` | Password authentication and session cookie. |
 | `POST /api/auth/logout` | Session revocation. |
+| `POST /api/ai/check` | Explicit owner-triggered live text probe. Returns ready, failed, or offline with a safe message. A configured key alone is not a verified connection; text success does not certify image/video coverage. |
 | `POST /api/reports/{report_id}/findings/{finding_id}/review` | Accept/reject correction guidance without waiving the underlying finding. |
 
 `GET /api/health` stays public. API documentation stays at `/docs`; private API calls require the session cookie.
@@ -155,9 +158,11 @@ Implementation verification: 98 backend tests and 53 frontend tests passed; Type
 
 Live smoke checklist after correcting the key:
 
+The judge demo includes **Check Nemotron connection** for this live probe. NVIDIA credential/model-access rejection now explicitly points to `NVIDIA_API_KEY` in `backend/.env` and a backend restart. Keep keys server-side; do not paste them into chat or screenshots. The walkthrough's final **Start judge demo** action opens a fresh lab with the first actual poster and caption loaded, ready for an explicit compliance check.
+
 1. Create/sign in to the owner account and keep the Volt example selected.
 2. Upload guidelines and verify proposed rules stay inactive until approval.
-3. Run the bad Volt copy, inspect numeric and semantic findings, approve a rewrite, recheck and save.
+3. Run the bad Volt copy, inspect numeric and semantic findings, edit the suggested rewrite manually, recheck and save.
 4. Attach a JPEG/PNG ad with a visible unsupported claim and inspect OCR/evidence and palette context.
 5. Attach a short MP4 with an audible claim and on-screen disclaimer. Verify `video_audio` coverage and sensible timestamps. A rejected media/audio extension must leave the report incomplete; do not disable audio to obtain a pass.
 6. Simulate or encounter a provider failure and verify submission/approval are blocked.
