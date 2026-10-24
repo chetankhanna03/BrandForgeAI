@@ -40,15 +40,19 @@ SEED_RULES = [
     ('Primary color', 'color', '#c5f277', '', 'Primary brand color is #c5f277.', 'Brand guidelines · Visual identity §1.2'),
 ]
 ACTIVE_BRAND = ContextVar('active_brand', default='demo')
+DEMO_NAMESPACE = ContextVar('demo_namespace', default=None)
 DEMO_BRAND = {'id': 'demo', 'name': 'Volt', 'product': 'Volt One', 'industry': 'Electric vehicles',
               'tagline': 'The everyday, electrified', 'website': 'volt.auto',
               'platforms': list(PLATFORMS), 'is_demo': True}
 
 
 @contextmanager
-def db(catalog=False):
+def db(catalog=False, owner_catalog=False):
     brand_id = 'demo' if catalog else ACTIVE_BRAND.get()
     path = Path(DB_PATH)
+    namespace = None if owner_catalog else DEMO_NAMESPACE.get()
+    if namespace:
+        path = path.with_name(f'{path.stem}.judge-{namespace}.db')
     if brand_id != 'demo':
         path = path.with_name(f'{path.stem}.brand-{brand_id}.db')
     connection = sqlite3.connect(str(path))
@@ -82,6 +86,7 @@ def initialize():
         CREATE TABLE IF NOT EXISTS sessions (
           token_hash TEXT PRIMARY KEY, owner_id INTEGER NOT NULL, expires REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS login_attempts (address TEXT NOT NULL, attempted_at REAL NOT NULL);''')
+        c.execute('CREATE TABLE IF NOT EXISTS demo_sessions (token_hash TEXT PRIMARY KEY, namespace TEXT NOT NULL, expires REAL NOT NULL)')
         if ACTIVE_BRAND.get() == 'demo' and not c.execute('SELECT COUNT(*) FROM rules').fetchone()[0]:
             c.executemany('INSERT INTO rules (name,kind,value,unit,evidence,source) VALUES (?,?,?,?,?,?)', SEED_RULES)
         if 'applies_when' not in {row['name'] for row in c.execute('PRAGMA table_info(rules)')}:
@@ -126,7 +131,17 @@ async def brand_context(request: Request, call_next):
         ACTIVE_BRAND.reset(token)
 
 
-install_auth(app, lambda: db(catalog=True))
+def initialize_judge_demo(namespace):
+    namespace_token = DEMO_NAMESPACE.set(namespace)
+    brand_token = ACTIVE_BRAND.set('demo')
+    try:
+        initialize()
+    finally:
+        ACTIVE_BRAND.reset(brand_token)
+        DEMO_NAMESPACE.reset(namespace_token)
+
+
+install_auth(app, lambda: db(catalog=True, owner_catalog=True), DEMO_NAMESPACE, initialize_judge_demo)
 
 
 @app.exception_handler(RequestValidationError)
@@ -286,6 +301,24 @@ def update_brand(brand_id: str, payload: BrandInput):
     return profile
 
 
+@app.post('/api/demo/workspace', status_code=201)
+def create_demo_workspace():
+    """Create an isolated, explicitly requested judge fixture; never reset user data."""
+    profile = {**DEMO_BRAND, 'id': uuid.uuid4().hex, 'name': 'Volt Demo Lab',
+               'is_demo': False, 'demo_fixture': 'volt-v1'}
+    token = ACTIVE_BRAND.set(profile['id'])
+    try:
+        initialize()
+        with db() as c:
+            c.executemany('INSERT INTO rules (name,kind,value,unit,evidence,source) VALUES (?,?,?,?,?,?)', SEED_RULES)
+            c.execute("UPDATE rules SET applies_when='range_claim' WHERE name='Range disclaimer'")
+    finally:
+        ACTIVE_BRAND.reset(token)
+    with db(catalog=True) as c:
+        c.execute('INSERT INTO brands (id,profile) VALUES (?,?)', (profile['id'], json.dumps(profile)))
+    return profile
+
+
 def media_details(row):
     return {'id': row['id'], 'filename': row['filename'], 'mime': row['mime'],
             'kind': 'video' if row['mime'].startswith('video/') else 'image',
@@ -399,6 +432,23 @@ def health():
     return {'status': 'ok'}
 
 
+@app.post('/api/ai/check')
+def check_nemotron():
+    """Explicit, authenticated real text probe; configured is not proof of connectivity."""
+    if nemotron.deterministic_only():
+        return {'status': 'offline', 'code': 'offline_mode', 'message': 'Offline mode is enabled. Set BRANDFORGE_DETERMINISTIC_ONLY=false and restart the backend for Nemotron.', 'scope': 'text_connectivity'}
+    try:
+        report = nemotron.review({'copy': 'A thoughtfully designed everyday product.', 'platforms': ['Website'],
+            'approved_rules': [{'id': 1, 'name': 'Unsupported claims', 'kind': 'prohibited', 'value': 'best in the world',
+                'evidence': 'Avoid unsupported superiority claims.', 'source': 'Synthetic connection check', 'version': 1}],
+            'deterministic_findings': []})
+        if not report.text_reviewed:
+            raise nemotron.AnalysisUnavailable('The model responded but did not confirm text coverage. Retry the check.', 'coverage')
+        return {'status': 'ready', 'code': 'ok', 'message': 'Nemotron returned a valid text review. Check each poster or video separately to verify its media analysis.', 'scope': 'text_connectivity'}
+    except nemotron.AnalysisUnavailable as error:
+        return {'status': 'failed', 'code': error.code, 'message': str(error), 'scope': 'text_connectivity'}
+
+
 @app.get('/api/workspace')
 def workspace():
     with db() as c:
@@ -426,7 +476,7 @@ def perform_analysis(payload, force=False):
             'content': payload.content, 'platforms': payload.platforms, 'rules': [r for r in rules if r['approved']],
             'media': hashlib.sha256(media['data']).hexdigest() if media else None,
             'model': nemotron.model_name(), 'base_url': os.getenv('NVIDIA_BASE_URL', 'https://integrate.api.nvidia.com/v1'),
-            'offline': nemotron.deterministic_only(), 'engine_version': 2,
+            'offline': nemotron.deterministic_only(), 'engine_version': 3,
         }, sort_keys=True).encode()).hexdigest()
         if payload.report_id and not force:
             cached = c.execute('SELECT * FROM analysis_reports WHERE id=? AND fingerprint=? AND created>?',

@@ -2,7 +2,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend import main
-from backend.auth import COOKIE
+from backend.auth import COOKIE, DEMO_USERNAME, DEMO_PASSWORD
 
 CREDS = {'username': 'owner', 'password': 'correct-password-for-tests'}
 
@@ -34,6 +34,68 @@ def test_owner_setup_login_cookie_and_logout(client):
         session = dict(c.execute('SELECT * FROM sessions').fetchone())
     assert CREDS['password'] not in str(stored)
     assert client.cookies.get(COOKIE) not in str(session)
+
+
+def test_displayed_judge_credentials_work_without_changing_the_owner(client):
+    client.post('/api/auth/setup',json=CREDS)
+    owner_draft=client.post('/api/drafts',json={'title':'Private owner draft','content':'Private marketing copy.','platforms':['Instagram']}).json()['id']
+    owner_brand=client.post('/api/brands',json={'name':'Private brand','product':'Private product','platforms':['Instagram']}).json()
+    with main.db(catalog=True) as c:
+        original_owner=dict(c.execute('SELECT * FROM owner_account').fetchone())
+    client.post('/api/auth/logout')
+    status=client.get('/api/auth/status').json()
+    assert status['demo']=={'enabled':True,'username':DEMO_USERNAME,'password':DEMO_PASSWORD}
+    assert CREDS['password'] not in str(status)
+    assert client.post('/api/auth/login',json={'username':DEMO_USERNAME,'password':DEMO_PASSWORD}).status_code==200
+    assert client.get('/api/auth/status').json()['role']=='judge'
+    workspace=client.get('/api/workspace').json()
+    assert len(workspace['rules'])==6
+    assert workspace['drafts']==workspace['media']==[]
+    assert len(client.get('/api/brands').json()['brands'])==1
+    assert client.get('/api/workspace',headers={'X-Brand-ID':owner_brand['id']}).status_code==404
+    assert client.put(f'/api/brands/{owner_brand["id"]}',json={'name':'Changed','product':'Changed','platforms':['Instagram']}).status_code==404
+    assert client.post('/api/auth/setup',json={'username':'another','password':'some-new-password-123'}).status_code==403
+    lab=client.post('/api/demo/workspace').json()
+    assert lab['demo_fixture']=='volt-v1'
+    client.post('/api/auth/logout')
+    assert client.post('/api/auth/login',json=CREDS).status_code==200
+    assert any(brand['id']==owner_brand['id'] for brand in client.get('/api/brands').json()['brands'])
+    assert client.get('/api/workspace').json()['drafts'][0]['id']==owner_draft
+    assert all(brand['id']!=lab['id'] for brand in client.get('/api/brands').json()['brands'])
+    with main.db(catalog=True) as c:
+        assert dict(c.execute('SELECT * FROM owner_account').fetchone())==original_owner
+
+
+def test_each_judge_login_has_a_fresh_isolated_sandbox(client):
+    credentials={'username':DEMO_USERNAME,'password':DEMO_PASSWORD}
+    assert client.post('/api/auth/login',json=credentials).status_code==200
+    first_cookie=client.cookies.get(COOKIE)
+    first_brand=client.post('/api/brands',json={'name':'Judge one','product':'Demo','platforms':['Website']}).json()
+    client.post('/api/auth/logout')
+    assert client.get('/api/workspace').status_code==401
+    client.post('/api/auth/login',json=credentials)
+    assert client.cookies.get(COOKIE)!=first_cookie
+    assert len(client.get('/api/brands').json()['brands'])==1
+    assert client.get('/api/workspace',headers={'X-Brand-ID':first_brand['id']}).status_code==404
+
+
+def test_demo_can_be_disabled_and_cannot_claim_owner_setup(client,monkeypatch):
+    assert client.post('/api/auth/setup',json={'username':DEMO_USERNAME,'password':DEMO_PASSWORD}).status_code==409
+    monkeypatch.setenv('BRANDFORGE_DEMO_LOGIN','false')
+    status=client.get('/api/auth/status').json()['demo']
+    assert status=={'enabled':False}
+    assert client.post('/api/auth/login',json={'username':DEMO_USERNAME,'password':DEMO_PASSWORD}).status_code==401
+
+
+def test_public_demo_login_does_not_reset_owner_rate_limit(client):
+    client.post('/api/auth/setup',json=CREDS)
+    client.post('/api/auth/logout')
+    for _ in range(7):
+        assert client.post('/api/auth/login',json={**CREDS,'password':'incorrect-password'}).status_code==401
+    assert client.post('/api/auth/login',json={'username':DEMO_USERNAME,'password':DEMO_PASSWORD}).status_code==200
+    client.post('/api/auth/logout')
+    assert client.post('/api/auth/login',json={**CREDS,'password':'incorrect-password'}).status_code==401
+    assert client.post('/api/auth/login',json=CREDS).status_code==429
 
 
 @pytest.mark.parametrize('method,path', [('GET', '/api/workspace'), ('GET', '/api/brands'),

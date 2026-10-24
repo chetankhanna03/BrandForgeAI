@@ -30,6 +30,43 @@ def create(client, **changes):
     return profile, {'X-Brand-ID': profile['id']}
 
 
+def test_judge_demo_is_isolated_prepared_and_never_resets_existing_work(client):
+    original = client.get('/api/workspace').json()
+    response = client.post('/api/demo/workspace')
+    assert response.status_code == 201
+    profile = response.json()
+    assert profile['demo_fixture'] == 'volt-v1'
+    headers = {'X-Brand-ID': profile['id']}
+    workspace = client.get('/api/workspace', headers=headers).json()
+    assert len(workspace['rules']) == 6
+    assert all(rule['approved'] for rule in workspace['rules'])
+    disclaimer = next(rule for rule in workspace['rules'] if rule['kind'] == 'required')
+    assert disclaimer['applies_when'] == 'range_claim'
+    good = main.evaluate('400 km from $29,999. Actual range may vary.', ['Instagram'], workspace['rules'])
+    bad = main.evaluate('500 km from $24,999. The best in the world.', ['Instagram'], workspace['rules'])
+    assert good['findings'] == []
+    assert {finding['title'] for finding in bad['findings']} == {'Product range', 'Starting price', 'Unapproved claims', 'Range disclaimer'}
+    second = client.post('/api/demo/workspace').json()
+    assert second['id'] != profile['id']
+    assert client.get('/api/workspace', headers=headers).json()['rules'] == workspace['rules']
+    assert client.get('/api/workspace').json()['rules'] == original['rules']
+
+
+def test_judge_posters_are_valid_media_for_the_real_upload_path(client):
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2] / 'frontend' / 'public' / 'demo'
+    for name in ('volt-approved.png', 'volt-violations.png'):
+        with (root / name).open('rb') as file:
+            response = client.post('/api/media', files={'file': (name, file, 'image/png')})
+        assert response.status_code == 201
+        assert response.json()['kind'] == 'image'
+
+
+def test_preparing_judge_workspace_requires_owner_session(client):
+    client.cookies.clear()
+    assert client.post('/api/demo/workspace').status_code == 401
+
+
 def test_new_brand_is_persistent_and_isolated_from_demo(client):
     demo_draft = client.post('/api/drafts', json=GOOD).json()['id']
     profile, headers = create(client)
