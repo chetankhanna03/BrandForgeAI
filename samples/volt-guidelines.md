@@ -1,4 +1,4 @@
-# Volt — Sample brand guidelines
+# Volt: Sample brand guidelines
 
 This fictional brand is included for the BrandForge AI hackathon demo.
 

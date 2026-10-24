@@ -54,7 +54,7 @@ These are clearly labeled testing fixtures, not precomputed AI outcomes. Nemotro
 - Each brand has its own saved details, rules, drafts, review history, and uploads. New brands start without the Volt sample rules; add and approve your guidelines using the existing **Guidelines & rules** flow.
 - In **BrandTwin**, choose platforms for the current draft and optionally upload an image or video (up to 10 MB). The selected platforms determine the available previews. Media is saved with the draft and restored when opening it as a new version.
 - JPEG/PNG images and MP4 videos can be reviewed alongside the copy, or without a caption. MP4 review is limited to 120 seconds; other existing upload formats are preview-only. Review model evidence and explicitly approve suggested corrections before applying them.
-- Return to **Overview → Active brand → Volt One — example brand** whenever you want to explore the original demo. Editors are recovered separately for each brand during the browser session.
+- Return to **Overview → Active brand → Volt One (example brand)** whenever you want to explore the original demo. Editors are recovered separately for each brand during the browser session.
 
 ### Explore Volt One
 

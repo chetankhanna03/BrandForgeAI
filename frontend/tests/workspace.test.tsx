@@ -57,7 +57,7 @@ describe('workspace navigation and recovery',()=>{
       }
     }
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    await screen.findByRole('heading',{name:'Create once. Check everywhere.'});
+    await screen.findByRole('heading',{name:'Check your content'});
     expect(screen.getByLabelText('Content title')).toHaveValue(demoSamples.approved.title);
     expect(screen.getByRole('button',{name:'Remove attached media'})).toBeInTheDocument();
     expect(screen.getByText('Judge demo is ready')).toBeInTheDocument();
@@ -65,7 +65,7 @@ describe('workspace navigation and recovery',()=>{
   },15000);
   it('replays the walkthrough from its persistent header entry',async()=>{
     await ready();await userEvent.click(screen.getByRole('button',{name:'Start walkthrough'}));
-    expect(screen.getByRole('dialog')).toHaveTextContent('Now let’s connect the dots.');
+    expect(screen.getByRole('dialog')).toHaveTextContent('Check your content.');
     await userEvent.click(screen.getByRole('button',{name:'Show me around'}));
     expect(screen.getByRole('heading',{name:'Click Overview to begin.'})).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button',{name:'Skip tour'}));
@@ -127,7 +127,7 @@ describe('workspace navigation and recovery',()=>{
       return json(workspace);
     };
     await ready();await userEvent.click(screen.getAllByRole('button',{name:'Try this poster'})[1]);
-    await screen.findByRole('heading',{name:'Create once. Check everywhere.'});
+    await screen.findByRole('heading',{name:'Check your content'});
     expect(screen.getByLabelText('Content title')).toHaveValue('Volt One · Find the four issues');
     expect((screen.getByLabelText(/Marketing copy/) as HTMLTextAreaElement).value).toContain('500 km');
     expect(screen.getByRole('button',{name:'Remove attached media'})).toBeInTheDocument();
@@ -135,8 +135,8 @@ describe('workspace navigation and recovery',()=>{
   });
   it('loads live counts and each navigation destination',async()=>{
     await ready();
-    expect(screen.getByText('Your next great idea starts here.')).toBeInTheDocument();
-    for(const [name,heading] of [['BrandDNA','The intelligence behind your brand.'],['BrandTwin','Create once. Check everywhere.'],['Content library','Every draft. One home.'],['Approvals','Good content deserves a green light.'],['Guidelines & rules','Your single source of truth.'],['Overview','A little clarity. A lot of confidence.']]){
+    expect(screen.getByText('No saved drafts yet.')).toBeInTheDocument();
+    for(const [name,heading] of [['BrandDNA','Brand knowledge graph'],['BrandTwin','Check your content'],['Content library','Content library'],['Approvals','Review and approve drafts'],['Guidelines & rules','Brand guidelines and rules'],['Overview','Workspace overview']]){
       await nav(name);expect(screen.getByRole('heading',{level:1,name:heading})).toBeInTheDocument();
     }
     expect(screen.getByRole('button',{name:'Overview'})).toHaveAttribute('aria-current','page');
@@ -270,7 +270,7 @@ describe('saved content and approvals',()=>{
   it('protects unsaved editor content when opening a saved draft',async()=>{
     workspace.drafts=[draft()];await studio();fireEvent.change(screen.getByLabelText(/Marketing copy/),{target:{value:'Unsaved work'}});
     vi.spyOn(window,'confirm').mockReturnValue(false);await nav('Content library');await userEvent.click(screen.getByRole('button',{name:/Edit as a new version/}));
-    expect(screen.getByRole('heading',{name:'Content library'})).toBeInTheDocument();await nav('BrandTwin');expect(screen.getByLabelText(/Marketing copy/)).toHaveValue('Unsaved work');
+    expect(screen.getByRole('heading',{name:'Content library',level:1})).toBeInTheDocument();await nav('BrandTwin');expect(screen.getByLabelText(/Marketing copy/)).toHaveValue('Unsaved work');
   });
   it('searches case insensitively, trims spaces, and gives a distinct no-match state',async()=>{
     workspace.drafts=[draft()];await ready();await nav('Content library');

@@ -113,7 +113,7 @@ describe('owner access',()=>{
 describe('unified compliance report',()=>{
   it('never shows a pass or a score when analysis failed even without findings',()=>{
     render(<ComplianceReport result={{...base,score:null,analysis:{status:'failed',message:'NVIDIA rate limit reached.'}}} busy={false} onReview={vi.fn()}/>);
-    expect(screen.getByRole('alert')).toHaveTextContent('this content has not passed');
+    expect(screen.getByRole('alert')).toHaveTextContent('This content has not passed');
     expect(screen.getByText('NVIDIA rate limit reached.')).toBeInTheDocument();
     expect(screen.queryByText(/Your content passes/)).not.toBeInTheDocument();
     expect(screen.queryByText('100')).not.toBeInTheDocument();

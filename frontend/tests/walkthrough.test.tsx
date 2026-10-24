@@ -89,7 +89,7 @@ it('waits for the destination to actually open after a highlighted tab click',as
   await begin();await userEvent.click(screen.getByRole('button',{name:'Overview'}));
   expect(screen.getByRole('heading',{name:'Click Overview to begin.'})).toBeInTheDocument();expect(screen.getByRole('button',{name:'Next'})).toBeDisabled();
   view.rerender(<><button data-tour="nav-overview">Overview</button><Walkthrough request={0} activeTab="Overview" onComplete={async()=>true}/></>);
-  await screen.findByRole('heading',{name:'One workspace for every brand.'});
+  await screen.findByRole('heading',{name:'Your brand workspace.'});
 });
 it('does not mistake a programmatic tab update for a user click',async()=>{
   const view=render(<Walkthrough request={0} activeTab="BrandTwin" onComplete={async()=>true}/>);await begin();

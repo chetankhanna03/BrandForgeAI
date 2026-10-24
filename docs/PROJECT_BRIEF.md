@@ -29,7 +29,7 @@ Rather than simply identifying errors, the system will explain why the content v
 
 We propose **BrandForge AI**, a platform that combines two main concepts: BrandDNA and BrandTwin.
 
-### BrandDNA — Brand Knowledge Graph
+### BrandDNA: Brand Knowledge Graph
 
 When a company uploads its brand guidelines, our system extracts important information such as product specifications, approved claims, brand colors, terminology, and other rules.
 
@@ -43,7 +43,7 @@ The knowledge graph allows the system to understand how different brand facts an
 
 If a company changes an approved product specification, the system can identify saved marketing drafts that depend on the previous information and flag them for review.
 
-### BrandTwin — Cross-Platform Brand Testing
+### BrandTwin: Cross-Platform Brand Testing
 
 BrandTwin allows users to test their marketing content across multiple platforms before publishing.
 
@@ -147,7 +147,7 @@ The same approved information will be used for testing content across all suppor
 
 ## 7. Responsibilities of Team Members
 
-**Team Member 1 — Backend and AI Development**
+**Team Member 1: Backend and AI Development**
 
 Responsible for:
 - PDF processing and information extraction.
@@ -156,7 +156,7 @@ Responsible for:
 - Database and API development.
 - Change impact detection.
 
-**Team Member 2 — Frontend and Platform Testing**
+**Team Member 2: Frontend and Platform Testing**
 
 Responsible for:
 - Designing and developing the frontend.
@@ -170,13 +170,13 @@ Both team members will work together on testing, debugging, documentation, and t
 
 ## 8. Development Plan Across Three Rounds
 
-### Round 1 — Planning and Architecture
+### Round 1: Planning and Architecture
 
 In this round, we will focus on understanding the problem, defining the product workflow, finalizing the technologies, and identifying the features that can realistically be developed.
 
 We will also prepare the system architecture and divide responsibilities between team members.
 
-### Round 2 — Core Development
+### Round 2: Core Development
 
 We will focus on creating a working prototype.
 
@@ -189,7 +189,7 @@ Our priorities will be:
 
 We will also work on connecting the different components into a complete system.
 
-### Round 3 — Improvements and Final Product
+### Round 3: Improvements and Final Product
 
 We will improve the reliability and usability of the prototype.
 
